@@ -2,38 +2,6 @@
 #include <stdio.h>
 #include "constants.h"
 
-#define NX (12*30)
-#define NY (12*30)
-#define NQ (17)
-
-// Plasma model flags
-#define XMHD true
-#define IMHD false
-#define YLBC 0
-#define YHBC 0
-#define XHBC 0
-#define XLBC 0
-
-// Define Fortran-like parameters
-#define rh 0
-#define mx 1
-#define my 2
-#define mz 3
-#define en 4
-#define bx 5
-#define by 6
-#define bz 7
-#define ex 8
-#define ey 9
-#define ez 10
-#define jx 11
-#define jy 12
-#define jz 13
-#define et 14
-#define ne 15
-#define ep 16
-
-
 // Function prototypes
 __global__ void calc_flux_x_kernel(float *Qx, float *cfx, float *ffx, int nx, int nq);
 __global__ void calc_flux_y_kernel(float *Qy, float *cfy, float *ffy, int ny, int nq);
@@ -43,8 +11,8 @@ __global__ void compute_dfr_dfl(float *fr, float *fl, float *dfrp, float *dfrm, 
 __global__ void compute_flux2(float *fr, float *fl, float *dfrp, float *dfrm, float *dflp, float *dflm, float *flux2, float sl, int n, int nq);
 __global__ void get_flux_kernel(float *Qin, float *flux_x, float *flux_y, float sl);
 __global__ void advance_time_level_rz_kernel(float *Qin, float *flux_x, float *flux_y, float *source, float *Qinp1, float dxt, float dyt, float dt, int nx, int ny) ;
-__global__ void limit_flow_kernel(float* Q, int nx, int ny);
-__device__ float eta_s(float e_Temp, float Za, float dne, float cln_min);
+__global__ void limit_flow(float *Qin, float rh_floor, float T_floor, float aindex, float Z, float vhcf, int nx, int ny, int nq);
+__device__ float eta_s(float e_Temp, float Za, float dne, float cln_min, int tp);
 __device__ float xc(int i, float dxi);
 __device__ float yc(int j, float dyi);
 
@@ -100,6 +68,10 @@ KTYPE f_las_host;
 KTYPE tperiod_host;
 KTYPE dgrate_host;
 
+KTYPE PLas;
+KTYPE Emax;
+KTYPE Bmax;
+
 static int isInitialized = 0;
 
 void initializeGlobals() {
@@ -131,7 +103,6 @@ void initializeGlobals() {
     ecyc_host = 1.76e11 * b0_host * t0_host;
     clt_host = cab_host / 1.0;
     cfva2_host = (cab_host / 1.0) * (cab_host / 1.0);
-    printf("host: cfva2 ... %e\n", cfva2_host);
     vhcf_host = 1.0e6;
     rh_floor_host = 1.0E-9;
     T_floor_host = 0.026 / te0_host;
@@ -154,6 +125,13 @@ void initializeGlobals() {
     f_las_host = clt_host * k_las_host;
     tperiod_host = 2.0 * pi_host / f_las_host;
     dgrate_host = 2.0 * lamb_host;
+
+    PLas=1.e16;
+    Emax=sqrt(2.*t0_host*PLas/(clt_host*L0_host*eps0_host));
+    Bmax=(t0_host*Emax/(L0_host*clt_host));
+    Emax=Emax/e0_host;
+    Bmax=Bmax/b0_host;
+
     isInitialized = 1;
   }
 }
@@ -248,7 +226,6 @@ __global__ void advance_time_level_rz_kernel(float *Qin, float *flux_x, float *f
     float rbp = 0.5f * (rc(i+1) + rc(i));
     float rbm = 0.5f * (rc(i) + rc(i-1));
     float rci = 1.0f / rc(i);
-    // printf("Cell %d %d %d %e.\n", i, j, rc(i), Qinp1[i * ny * NQ + j * NQ + rh]);
 
     Qinp1[idxnQ + rh] = Qin[idxnQ + rh] * rc(i) 
                                 - mdxt * (flux_x[idxnQ + rh] * rbp - flux_x[idxnQ_im1 + rh] * rbm) 
@@ -335,7 +312,7 @@ __global__ void advance_time_level_rz_kernel(float *Qin, float *flux_x, float *f
 
     if (isnan(Qinp1[idxnQ + rh])) {
       // Print the number of the cell where NaN was encountered
-      printf("NaN encountered in cell %d %d %e. Exiting...\n", i, j, Qinp1[idxnQ + rh]);
+      printf("NaN encountered in cell i=%d j=%d %e. Exiting...\n", i, j, Qinp1[idxnQ + rh]);
       return;
     }
 
@@ -353,17 +330,41 @@ void advance_time_level_rz(dim3 bs, dim3 gs, float *Qin, float *flux_x, float *f
   cudaDeviceSynchronize();
 }
 
-__global__ void limit_flow_kernel(float* Q, int nx, int ny, int nq) {
+__global__ void limit_flow(float *Qin, float rh_floor, float T_floor, float aindex, float Z, float vhcf, int nx, int ny, int nq) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     int idxnQ = i* (ny * nq) + j* nq ;
 
-    // if (i < nx && j < ny) {
-    //     if (Q[idx] < 0) Q[idx] = 0;
-    // }
+    if (i < nx && j < ny) {
+      float en_floor = rh_floor * T_floor / (aindex - 1.0);
+
+      if (Qin[idxnQ + rh] <= rh_floor || Qin[idxnQ + ne] <= Z * rh_floor) {
+          Qin[idxnQ + rh] = rh_floor;
+          Qin[idxnQ + ne] = Z * rh_floor;
+          Qin[idxnQ + mx] = 0.0;
+          Qin[idxnQ + my] = 0.0;
+          Qin[idxnQ + mz] = 0.0;
+          Qin[idxnQ + jx] = 0.0;
+          Qin[idxnQ + jy] = 0.0;
+          Qin[idxnQ + jz] = 0.0;
+          Qin[idxnQ + en] = en_floor;
+          Qin[idxnQ + et] = Z * en_floor;
+      }
+
+      if (abs(Qin[idxnQ + jx]) > vhcf * Qin[idxnQ + rh]) {
+          Qin[idxnQ + jx] = vhcf * Qin[idxnQ + rh] * copysign(1.0, Qin[idxnQ + jx]);
+      }
+      if (abs(Qin[idxnQ + jy]) > vhcf * Qin[idxnQ + rh]) {
+          Qin[idxnQ + jy] = vhcf * Qin[idxnQ + rh] * copysign(1.0, Qin[idxnQ + jy]);
+      }
+      if (abs(Qin[idxnQ + jz]) > vhcf * Qin[idxnQ + rh]) {
+          Qin[idxnQ + jz] = vhcf * Qin[idxnQ + rh] * copysign(1.0, Qin[idxnQ + jz]);
+      }
+  }
+
 }
 
-__global__ void set_bc_kernel(float *Qin, float t, float dxi, float dyi, float k_las, float f_las, int nx, int ny, int nq) {
+__global__ void set_bc_kernel(float *Qin, float t, float dxi, float dyi, float k_las, float f_las, float Emax, float Bmax, int nx, int ny, int nq) {
 
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   int j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -384,8 +385,9 @@ __global__ void set_bc_kernel(float *Qin, float t, float dxi, float dyi, float k
           Qin[0 * ny * nq + j * nq + l] = Qin[1 * ny * nq + j * nq + l];
 
           // Laser boundary conditions
-          Qin[i * ny * nq + j * nq + bz] = 0.1f*cos(k_las * xc(i, dxi) - f_las * t);
-          Qin[i * ny * nq + j * nq + ey] = cab*0.1f*cos(k_las * xc(i, dxi) - f_las * t);
+          Qin[i * ny * nq + j * nq + by] = -1.0f*Bmax*cos(k_las * xc(i, dxi) - f_las * t);
+          Qin[i * ny * nq + j * nq + ez] = 1.0f*Emax*cos(k_las * xc(i, dxi) - f_las * t);
+
         }
     }
   }
@@ -404,16 +406,16 @@ __global__ void set_bc_kernel(float *Qin, float t, float dxi, float dyi, float k
           Qin[i * ny * nq + 0 * nq + l] = Qin[i * ny * nq + 1 * nq + l];
 
           // // Laser boundary conditions
-          Qin[i * ny * nq + j * nq + bz] = 0.1f*cos(k_las * yc(j, dyi) - f_las * t);
-          Qin[i * ny * nq + j * nq + ex] = -cab*0.1f*cos(k_las * yc(j, dyi) - f_las * t);
+          // Qin[i * ny * nq + j * nq + bz] = 0.1f*cos(k_las * yc(j, dyi) - f_las * t);
+          // Qin[i * ny * nq + j * nq + ex] = -cab*0.1f*cos(k_las * yc(j, dyi) - f_las * t);
         }
     }
   }
   
 }
 
-void set_bc(dim3 bs, dim3 gs, float *Qin, float t, float dxi, float dyi, float k_las, float f_las, int nx, int ny, int nq) {
-  set_bc_kernel<<<gs, bs>>>(Qin, t, dxi, dyi, k_las, f_las, nx, ny, nq);
+void set_bc(dim3 bs, dim3 gs, float *Qin, float t, float dxi, float dyi, float k_las, float f_las, float Emax, float Bmax, int nx, int ny, int nq) {
+  set_bc_kernel<<<gs, bs>>>(Qin, t, dxi, dyi, k_las, f_las, Emax, Bmax, nx, ny, nq);
   cudaDeviceSynchronize();
 }
 
@@ -431,7 +433,7 @@ __global__ void implicit_source2_kernel(float* Qin, float* flux_x, float* flux_y
   int idxnQ = i* (ny * nq) + j* nq ;
   int idx = i* (ny * 1) + j* 1;
 
-  if (i < nx - 2 && j < ny - 2) {
+  if (i < nx - 2 && j < ny - 2 && j > 1 && i > 1) {
     float Ainv[3][3];
     float Qjx, Qjy, Qjz, Qex, Qey, Qez, ma2, mamb, mb2, ma, mb, denom;
     float ux, uy, uz, hx, hy, hz, dnii, sig, mati, fac, zero, dne;
@@ -461,6 +463,8 @@ __global__ void implicit_source2_kernel(float* Qin, float* flux_x, float* flux_y
       }
 
       ma = 1.0f + dt * gma2 * dne * (eta[idx] + dt * cfva2);
+      // ma = 1.0f + dt * gma2 * dne * (0.1 + dt * cfva2);
+
       ma2 = ma * ma;
       mamb = ma * mb;
 
@@ -478,15 +482,39 @@ __global__ void implicit_source2_kernel(float* Qin, float* flux_x, float* flux_y
 
       Qjx = Qin[idxnQ + jx] + dt * gma2 * (dne * (Qin[idxnQ + ex] + uy * hz - uz * hy) + dxt * 1.0f * (flux_x[idxnQ + ep] - flux_x[(i - 1) * ny * nq + j * nq + ep]));
       Qjy = Qin[idxnQ + jy] + dt * gma2 * (dne * (Qin[idxnQ + ey] + uz * hx - ux * hz) + dyt * 1.0f * (flux_y[idxnQ + ep] - flux_y[i * ny * nq + (j - 1) * nq + ep]));
-      Qjz = Qin[i * NY * NQ + j * NQ + 13] + dt * gma2 * (dne * (Qin[i * NY * NQ + j * NQ + 10] + ux * hy - uy * hx));
+      Qjz = Qin[i * ny * nq + j * nq + jz] + dt * gma2 * (dne * (Qin[i * ny * nq + j * nq + ez] + ux * hy - uy * hx));
 
       Qout[idxnQ + jx] = Ainv[0][0] * Qjx + Ainv[0][1] * Qjy + Ainv[0][2] * Qjz;
       Qout[idxnQ + jy] = Ainv[1][0] * Qjx + Ainv[1][1] * Qjy + Ainv[1][2] * Qjz;
       Qout[idxnQ + jz] = Ainv[2][0] * Qjx + Ainv[2][1] * Qjy + Ainv[2][2] * Qjz;
 
+      // if (i == 3 && j == 100) {
+      //   printf("Before implicit source\n");
+      //   printf("dt= %e\n", dt );
+      //   printf("gma2= %e\n", gma2 );
+      //   printf("dne= %e\n", dne );
+      //   printf("cfva2= %e\n", cfva2 );
+      //   printf("denom= %e\n", denom );
+      //   printf("ma2= %e\n", ma2 );
+      //   printf("mb2= %e\n", mb2 );
+      //   printf("ecyc= %e\n", ecyc );
+
+      //   // printf("dt= %e\n", dt );
+      //   // printf("cfva2= %e\n", cfva2 );
+      //   // printf("dt*cfva2 = %e\n", dt * cfva2);
+      //   // printf("Qout[%d][%d][%d] = %e\n", i, j, ey, Qout[idxnQ + ey]);
+      //   printf("Qout[%d][%d][%d] = %e\n", i, j, jy, Qout[idxnQ + jz]);
+      // }
+
       Qout[idxnQ + ex] = Qin[idxnQ + ex] - dt * cfva2 * Qout[idxnQ + jx];
       Qout[idxnQ + ey] = Qin[idxnQ + ey] - dt * cfva2 * Qout[idxnQ + jy];
       Qout[idxnQ + ez] = Qin[idxnQ + ez] - dt * cfva2 * Qout[idxnQ + jz];
+
+      // if (i == 3 && j == 100) {
+      //   printf("After implicit source\n");
+      //   printf("Qout[%d][%d][%d] = %e\n", i, j, ey, Qout[idxnQ + ez]);
+      //   printf("Qout[%d][%d][%d] = %e\n", i, j, jy, Qout[idxnQ + jz]);
+      // }
     }
 
     if (IMHD) {
@@ -511,10 +539,7 @@ __global__ void implicit_source2_kernel(float* Qin, float* flux_x, float* flux_y
   }
 }
 
-void implicit_source2(dim3 bs, dim3 gs, float* Qin, float* flux_x, float* flux_y, float* eta, float* Qout, float dxi, float dyi, float dt, int nx, int ny, int nq) {
-  float dxt = dxi * dt;
-  float dyt = dyi * dt;
-
+void implicit_source2(dim3 bs, dim3 gs, float* Qin, float* flux_x, float* flux_y, float* eta, float* Qout, float dxt, float dyt, float dt, int nx, int ny, int nq) {
   implicit_source2_kernel<<<gs, bs>>>(Qin, flux_x, flux_y, eta, Qout, dxt, dyt, dt, nx, ny, nq);
   cudaDeviceSynchronize();
 }
@@ -543,10 +568,6 @@ __global__ void copy3DTo2DSliceX(float *d_Qin, float *d_Qx, int nx, int ny, int 
 
   if (i < nx && q < nq) {
       d_Qx[i * nq + q] = d_Qin[i * ny * nq + j * nq + q];
-      // if (i == 4 && j == 4 ) {
-      //   printf("d_Qin[%d][%d] = %e\n", i, q, d_Qin[i * ny * nq + j * nq + bz]);
-      //   // printf("d_Qx[%d][%d] = %e\n", i, q, d_Qx[i * nq + q]);
-      // }
   }
 }
 
@@ -556,10 +577,6 @@ __global__ void copy3DTo2DSliceY(float *d_Qin, float *d_Qy, int nx, int ny, int 
 
   if (j < nx && q < nq) {
       d_Qy[j * nq + q] = d_Qin[i * ny * nq + j * nq + q];
-
-      // if (i == 4 && j == 1 && q == ex) {
-      //   printf("d_Qin[%d][%d] = %e\n", i, q, d_Qin[i * ny * nq + j * nq + ex]);
-      // }
   }
 }
 
@@ -814,18 +831,6 @@ __global__ void calc_flux_x_kernel(float *Qx, float *cfx, float *flx, int nx, in
   cfx[idx + ex] = vf2;
   cfx[idx + ey] = vf2;
   cfx[idx + ez] = vf2;
-
-  // if (i == 4 || i == 5 || i == 6) {
-  //   // printf("Qx[%d]=%e\n", i, Qx[idx+bz]);
-  //   // printf("p[%d], i[%d]\n", ((i + 1) % n) * nq + q, idx);
-  //   // printf("frp[%d] = %e, fr[%d]=%e\n", idx, fr[((i + 1) % n) * nq + q], idx, fr[idx]);
-  //   // printf("dfrp[%d] = %e, dfrm[%d] = %e, fr[%d]=%e\n", idx, dfrp[idx], idx, dfrm[idx], idx, fr[idx]);
-  //   // printf("dfrp[%d] = %e, dfrm[%d] = %e\n", idx, dfrp[idx], idx, dfrm[idx]);
-  // } 
-
-  // if (i == 4) {
-  //   printf("cfx[%d] = %e, ff[%d] = %e\n", idx, cfx[idx+bz], idx, flx[idx+bz]);
-  // } 
 }
 
 __global__ void calc_flux_y_kernel(float* Qy, float* cfy, float* fly, int ny, int nq) {
@@ -912,15 +917,6 @@ __global__ void calc_flux_y_kernel(float* Qy, float* cfy, float* fly, int ny, in
   cfy[idx+ ex] = vf2;
   cfy[idx+ ey] = vf2;
   cfy[idx+ ez] = vf2;
-
-
-  // if (j == 1 || j == 2 || j == 3) {
-  //   printf("fly[%d]=%e\n", j, fly[idx+ex]);
-  //   // printf("p[%d], i[%d]\n", ((i + 1) % n) * nq + q, idx);
-  //   // printf("frp[%d] = %e, fr[%d]=%e\n", idx, fr[((i + 1) % n) * nq + q], idx, fr[idx]);
-  //   // printf("dfrp[%d] = %e, dfrm[%d] = %e, fr[%d]=%e\n", idx, dfrp[idx], idx, dfrm[idx], idx, fr[idx]);
-  //   // printf("dfrp[%d] = %e, dfrm[%d] = %e\n", idx, dfrp[idx], idx, dfrm[idx]);
-  // } 
   
 }
 
@@ -932,20 +928,6 @@ __global__ void compute_wr_wl(float *Qin, float *ff, float *cfr, float *wr, floa
     int idx = i * nq + q;
     wr[idx] = cfr[idx] * Qin[idx] + ff[idx];
     wl[idx] = cfr[idx] * Qin[idx] - ff[idx];
-
-    // if (tp == 1)  {
-    //   if ((i == 0 || i == 1 || i == 2 || i == 3 || i ==4 )) {
-    //     printf("ff[%d]=%e\n", i,  ff[idx+q]);
-    //     // printf("p[%d], i[%d]\n", ((i + 1) % n) * nq + q, idx);
-    //     // printf("frp[%d] = %e, fr[%d]=%e\n", idx, fr[((i + 1) % n) * nq + q], idx, fr[idx]);
-    //     // printf("dfrp[%d] = %e, dfrm[%d] = %e, fr[%d]=%e\n", idx, dfrp[idx], idx, dfrm[idx], idx, fr[idx]);
-    //     // printf("dfrp[%d] = %e, dfrm[%d] = %e\n", idx, dfrp[idx], idx, dfrm[idx]);
-    //   } 
-    // }
-
-    // if (i == 4 && q == bz) {
-    //   printf("cfr[%d] = %e, ff[%d] = %e\n", idx, cfr[idx], idx, ff[idx]);
-    // } 
   }
 }
 
@@ -957,13 +939,7 @@ __global__ void compute_fr_fl(float *wr, float *wl, float *fr, float *fl, int n,
     int idx = i * nq + q;
     fr[idx] = wr[idx];
     fl[idx] = wl[((i + 1) % n) * nq + q];
-    // if (i == 4 && q == bz) {
-    //   printf("wl[92]=%e, wl[75]=%e, wl[109]=%e\n", wl[92], wl[75], wl[109]);
-    //   // printf("p[%d], i[%d]\n", ((i + 1) % n) * nq + q, idx);
-    //   // printf("frp[%d] = %e, fr[%d]=%e\n", idx, fr[((i + 1) % n) * nq + q], idx, fr[idx]);
-    //   // printf("dfrp[%d] = %e, dfrm[%d] = %e, fr[%d]=%e\n", idx, dfrp[idx], idx, dfrm[idx], idx, fr[idx]);
-    //   // printf("dfrp[%d] = %e, dfrm[%d] = %e\n", idx, dfrp[idx], idx, dfrm[idx]);
-    // } 
+
   }
 }
 
@@ -978,13 +954,6 @@ __global__ void compute_dfr_dfl(float *fr, float *fl, float *dfrp, float *dfrm, 
     dflp[idx] = fl[idx] - fl[((i + 1) % n) * nq + q];
     dflm[idx] = fl[((i - 1 + n) % n) * nq + q] - fl[idx];
 
-    // if (i == 4 && q == bz) {
-    //   printf("fr[92]=%e, fr[75]=%e, fr[109]=%e\n", fr[92], fr[75], fr[109]);
-    //   // printf("p[%d], i[%d]\n", ((i + 1) % n) * nq + q, idx);
-    //   // printf("frp[%d] = %e, fr[%d]=%e\n", idx, fr[((i + 1) % n) * nq + q], idx, fr[idx]);
-    //   // printf("dfrp[%d] = %e, dfrm[%d] = %e, fr[%d]=%e\n", idx, dfrp[idx], idx, dfrm[idx], idx, fr[idx]);
-    //   // printf("dfrp[%d] = %e, dfrm[%d] = %e\n", idx, dfrp[idx], idx, dfrm[idx]);
-    // } 
   }
 }
 
@@ -996,9 +965,7 @@ __global__ void compute_flux2(float *fr, float *fl, float *dfrp, float *dfrm, fl
     int idx = i * nq + q;
     
     float dfr, dfl;
-    // if (i == 4 && q == bz) {
-    //   printf("dfrp[%d] = %e, dfrm[%d] = %e\n", idx, dfrp[idx], idx, dfrm[idx]);
-    // } 
+
     if (dfrp[idx] * dfrm[idx] > 0) {
       dfr = dfrp[idx] * dfrm[idx] / (dfrp[idx] + dfrm[idx]);
     } else {
@@ -1025,6 +992,7 @@ __global__ void get_sources_kernel(
   if (i < nx && j < ny) {
     float ri, vx, vy, vz, P, viscx = 0.0f, viscy = 0.0f, viscz = 0.0f, mage2, magi2, toi, viscoeff, dx, mui, t0i, dx2;
     float gyro, vix, viy, viz, vxr, vyr, vzr, vex, vey, vez, ux, uy, uz, linv, Zi, dnei, dni, dne, dnii, Zin, dti, fac, theta_np;
+    float Cln, eta_s;
 
     gyro = memi * ecyc;
     linv = 1.0f / lil0;
@@ -1036,9 +1004,8 @@ __global__ void get_sources_kernel(
     dx = 1.0f / dxi;
     mui = (1.0f + Z) * t0;
     t0i = 1.0f / t0;
+    Zin = 1.0f / (Z + 1.0f);
 
-    // dni = Qin[i + j * nx + rh * nx * ny];
-    // dne = Qin[i + j * nx + ne * nx * ny];
     dni = Qin[idxnQ + rh ];
     dne = Qin[idxnQ + ne];
     dnii = 1.0f / dni;
@@ -1058,14 +1025,36 @@ __global__ void get_sources_kernel(
     Teev[idx] = (aindex - 1) * (Qin[idxnQ+et] * dnei - 0.5f * memi * (vex * vex + vey * vey + vez * vez));
     if (Teev[idx] < T_floor) Teev[idx] = T_floor;
 
-    theta_np = 0.5f * (1.0f + tanh(50.0f * (dni * n0 / 5e28f - 1.0f)));
-    eta_in[idx] = eta_s(Teev[idx], Z, dne, 0.001f);
-    // printf("eta_in: %e\n",eta_in[idx]);
+    // theta_np = 0.5f * (1.0f + tanh(50.0f * (dni * n0 / 5e28f - 1.0f)));
+    // if (i == 150 && j == 150) {
+    //   eta_in[idx] = eta_s(Teev[idx], Z, dne, 0.001f, 0);
+    // }
+    // else{
+    //   eta_in[idx] = eta_s(Teev[idx], Z, dne, 0.001f, 0);
+    // }
 
-    if (dni * n0 / 5e28f >= 1.0f) {
-      theta_np = 0.5f * (1.0f + tanh(50.0f * (Teev[idx] * te0 / 0.4f - 1.0f)));
-      eta_in[idx] = eta_s(Teev[idx], Z, dne, 0.001f);
+    // if (dni * n0 / 5e28f >= 1.0f) {
+    //   theta_np = 0.5f * (1.0f + tanh(50.0f * (Teev[idx] * te0 / 0.4f - 1.0f)));
+    //   eta_in[idx] = eta_s(Teev[idx], Z, dne, 0.001f, 0);
+    // }
+
+    //!------------ Spitzer and LMD resistivity model -------------
+
+    if(Teev[idx] >= 0.357*pow(Z,2)){
+        Cln = 0.054*(1.110 - 0.5*log(dne/pow(Teev[idx],2)));                //! valid for T_e > 10Z^2 eV 
     }
+    else  {
+        Cln = 0.054*(1.625 - 0.5*log(Z*dne/pow(Teev[idx],3)));             // ! Valid for T_e < 10Z^2 eV
+    }
+
+    if(Cln < 0.01)Cln = 0.01;      
+    if(!IMHD) {                               
+        eta_s = 0.333*Cln*Z/pow(Teev[idx], 1.5);     //! extra factor of 0.5 to reduce
+    }
+    else  {
+        eta_s = 0.333*Cln*Z/pow(Zin*Tiev[idx], 1.5);
+    }
+    eta_in[idx] = 1./sqrt(1./pow(eta_s, 2) + 400*pow(dni, 2)) ;
 
     nuei[idx] = gma2 * dne * eta_in[idx];
 
@@ -1119,7 +1108,7 @@ __global__ void get_sources_kernel(
           + memi * lil0 * nuei[idx] * (vix * Qin[idxnQ+jx] + viy * Qin[idxnQ+jy] + viz * Qin[idxnQ+jz])
           - 3 * memi * nuei[idx] * dni * (Teev[idx] - Tiev[idx]);
     }
-
+   
     Qin[idxnQ+ep] = dne * Teev[idx];
     if (rc(i) != rc(i + 1)) {
       sourcesin[idxnQ+ne] *= rc(i);
@@ -1135,7 +1124,7 @@ __global__ void get_sources_kernel(
   }
 }
 
-__device__ float eta_s(float e_Temp, float Za, float dne, float cln_min) {
+__device__ float eta_s(float e_Temp, float Za, float dne, float cln_min, int tp) {
   float Cln;
   const float c_eta = 1.0f; // Assuming c_eta is defined elsewhere in your program
   const float cln1 = 23.5f; // Assuming cln1 is defined elsewhere in your program
@@ -1153,8 +1142,14 @@ __device__ float eta_s(float e_Temp, float Za, float dne, float cln_min) {
   }
 
   float eta_s_value = Za * Cln / powf(e_Temp, 1.5f);
-  eta_s_value = c_eta * 3.0f * Cln / powf(e_Temp, 1.5f);
 
+  if (tp == 1) {
+    printf("Za=%e\n", Za);
+    printf("Cln=%e\n", Cln);
+    printf("e_Temp=%e\n", e_Temp);
+    printf("dne=%e\n", dne);
+    printf("eta_s_value=%e\n", eta_s_value);
+  }
   return eta_s_value;
 }
 
@@ -1168,6 +1163,25 @@ void get_min_dt(float* dt, float cfl, float dxi, float vmax) {
 
   // Copy the computed dt value to the device constant
   cudaMemcpyToSymbol(d_dt, dt, sizeof(float), 0, cudaMemcpyHostToDevice);
+}
+
+// Kernel function to fill the middle third of the computational domain
+__global__ void fill_rod(float *Q_in, int nx, int ny, int nq, float te0, float lxu, float lyu, float n0, float Z, float lamb, float rh_floor, float dgrate, float dxi, float dyi) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  int j = blockIdx.y * blockDim.y + threadIdx.y;
+  int idx = i * (ny * nq) + j * nq;
+
+  if (i < nx && j < ny) {
+    float wtev = 1.0 / te0;
+    float nioncrit = 3.96e27 / n0 / Z;
+
+    if (xc(i, dxi) >= 4.0 * lamb && xc(i, dxi) <= 8.0 * lamb) {
+      Q_in[idx + rh] = 0.5 * 1 * nioncrit + rh_floor;  // rh
+      Q_in[idx + ne] = Z * Q_in[idx + rh];  // ne
+      Q_in[idx + en] = wtev * Q_in[idx + rh] * (1 + Z);  // en
+      Q_in[idx + et] = wtev * Q_in[idx + ne] * (1 + Z);  // et
+    }
+  }
 }
 
 
@@ -1247,6 +1261,8 @@ void initial_condition(dim3 bs, dim3 gs, float *Qin, float rh_floor, float Z, fl
 
 void write_vtk(const char* prefix, float* Q, float* fluxx, int nx, int ny, int nq, int timestep) {
   char filename[256];
+  float dne, vex, vey, vez, P;
+
   sprintf(filename, "%s_%04d.vtk", prefix, timestep);
 
   FILE* file = fopen(filename, "w");
@@ -1276,18 +1292,34 @@ void write_vtk(const char* prefix, float* Q, float* fluxx, int nx, int ny, int n
   fprintf(file, "LOOKUP_TABLE default\n");
   for (int j = 0; j < ny; ++j) {
       for (int i = 0; i < nx; ++i) {
-          fprintf(file, "%e\n", Q[i * ny * nq + j * nq + rh]);
-          // printf("rh: in print %e\n", Q[i * ny * nq + j * nq + rh]);
+          fprintf(file, "%e\n", n0_host*Q[i * ny * nq + j * nq + rh]);
+      }
+  }
+
+  // Write scalar field: fluxx
+  fprintf(file, "SCALARS e_temp float 1\n");
+  fprintf(file, "LOOKUP_TABLE default\n");
+  for (int j = 0; j < ny; ++j) {
+      for (int i = 0; i < nx; ++i) {
+        dne = 1./Q[i * ny * nq + j * nq + ne];
+        vex = Q[i * ny * nq + j * nq + mx]/Q[i * ny * nq + j * nq + rh] - lil0_host*Q[i * ny * nq + j * nq + jx]*dne;
+        vey = Q[i * ny * nq + j * nq + my]/Q[i * ny * nq + j * nq + rh] - lil0_host*Q[i * ny * nq + j * nq + jx]*dne;
+        vez = Q[i * ny * nq + j * nq + mz]/Q[i * ny * nq + j * nq + rh] - lil0_host*Q[i * ny * nq + j * nq + jx]*dne;
+        P = (aindex_host - 1)*(Q[i * ny * nq + j * nq + et] - 0.5*memi_host*Q[i * ny * nq + j * nq + ne]*(vex*vex + vey*vey + vez*vez));
+        if(P < 0.)  {
+        P = Q[i * ny * nq + j * nq + ne]*T_floor_host;
+        }
+        fprintf(file, "%e\n", P*dne*te0_host);
       }
   }
 
 
   // Write scalar field: fluxx
-  fprintf(file, "SCALARS fluxx float 1\n");
+  fprintf(file, "SCALARS eta float 1\n");
   fprintf(file, "LOOKUP_TABLE default\n");
   for (int j = 0; j < ny; ++j) {
       for (int i = 0; i < nx; ++i) {
-          fprintf(file, "%e\n", fluxx[i * ny * nq + j * nq + ey]);
+          fprintf(file, "%e\n", eta0_host*fluxx[i * ny + j  ]);
       }
   }
 
@@ -1295,8 +1327,7 @@ void write_vtk(const char* prefix, float* Q, float* fluxx, int nx, int ny, int n
   fprintf(file, "VECTORS B float\n");
   for (int j = 0; j < ny; ++j) {
       for (int i = 0; i < nx; ++i) {
-          fprintf(file, "%e %e %e\n", Q[i * ny * nq + j * nq + bx], Q[i * ny * nq + j * nq + by], Q[i * ny * nq + j * nq + bz]);
-          // printf("B: in print %e %e %e\n", Q[i * ny * nq + j * nq + bx], Q[i * ny * nq + j * nq + by], Q[i * ny * nq + j * nq + bz]);
+          fprintf(file, "%e %e %e\n", b0_host*Q[i * ny * nq + j * nq + bx], b0_host*Q[i * ny * nq + j * nq + by], b0_host*Q[i * ny * nq + j * nq + bz]);
       }
   }
 
@@ -1304,8 +1335,15 @@ void write_vtk(const char* prefix, float* Q, float* fluxx, int nx, int ny, int n
   fprintf(file, "VECTORS E float\n");
   for (int j = 0; j < ny; ++j) {
       for (int i = 0; i < nx; ++i) {
-          fprintf(file, "%e %e %e\n", Q[i * ny * nq + j * nq + ex], Q[i * ny * nq + j * nq + ey], Q[i * ny * nq + j * nq + ez]);
-          // printf("E: in print %e %e %e\n", Q[i * ny * nq + j * nq + ex], Q[i * ny * nq + j * nq + ey], Q[i * ny * nq + j * nq + ez]);
+        fprintf(file, "%e %e %e\n", e0_host*Q[i * ny * nq + j * nq + ex], e0_host*Q[i * ny * nq + j * nq + ey], e0_host*Q[i * ny * nq + j * nq + ez]);
+      }
+  }
+
+  // Write vector field: E
+  fprintf(file, "VECTORS J float\n");
+  for (int j = 0; j < ny; ++j) {
+      for (int i = 0; i < nx; ++i) {
+          fprintf(file, "%e %e %e\n", j0_derived_host*Q[i * ny * nq + j * nq + jx], j0_derived_host*Q[i * ny * nq + j * nq + jy], j0_derived_host*Q[i * ny * nq + j * nq + jz]);
       }
   }
 
@@ -1318,8 +1356,8 @@ int main() {
     initialize_constants();
     float *Q, *flux_x, *flux_y, *sources, *Q1, *Q2, *Q3, *Q4, *eta, *ect, *Tiev, *Teev, *nuei, *kap_i, *kap_e, *vis_i;
     float *d_Q, *d_flux_x, *d_flux_y, *d_sources, *d_Q1, *d_Q2, *d_Q3, *d_Q4, *d_eta, *d_ect, *d_Tiev, *d_Teev, *d_nuei, *d_kap_i, *d_kap_e, *d_vis_i;
-    float dxt, dyt;
-    float dt, t = 0.0f, dx=12.0f*lamb_host/NX, dxi = 1.0f/dx, dy=12.0f*lamb_host/NY, dyi = 1.0f/dy;
+    float dxt, dyt, lxu=12.0f*lamb_host, lyu=12.0f*lamb_host, dgrate=0.1f;
+    float dt, t = 0.0f, dx=lxu/NX, dxi = 1.0f/dx, dy=lyu/NY, dyi = 1.0f/dy;
     int nprint = 0, niter = 0, iorder = 2;
     int nout = 0;
 
@@ -1375,33 +1413,35 @@ int main() {
     cudaMemcpy(d_vis_i, vis_i, NX * NY * sizeof(float), cudaMemcpyHostToDevice);
 
 
-    dim3 blockDim(32, 32);
+    dim3 blockDim(BLOCK_SIZE, BLOCK_SIZE);
     dim3 gridDim((NX + blockDim.x - 1) / blockDim.x, (NY + blockDim.y - 1) / blockDim.y);
 
     // Set initial conditions
     initial_condition(blockDim, gridDim, d_Q, rh_floor_host, Z_host, T_floor_host, aindex_host, bapp_host, b0_host, NX, NY, NQ);
+    fill_rod<<<gridDim, blockDim>>>(d_Q, NX, NY, NQ, te0_host, lxu, lyu, n0_host, Z_host, lamb_host, rh_floor_host, dgrate, dxi, dyi);
     cudaMemcpy(Q, d_Q, NX * NY * NQ * sizeof(float), cudaMemcpyDeviceToHost);
-    write_vtk("output", Q, flux_x, NX, NY, NQ, nout);  // Add timestep to the filename
+    write_vtk("output", Q, eta, NX, NY, NQ, nout);  // Add timestep to the filename
 
     if (true) {
-    while (nprint <= 100) {
+    while (nprint <= 10) {
       get_min_dt(&dt, 0.5, dxi, clt_host);
-      // printf("lamb ... %e\n", lamb_host);
 
       dxt = dt * dxi;
       dyt = dt * dyi;
 
       if (iorder == 1) {
-        limit_flow_kernel<<<gridDim, blockDim>>>(d_Q, NX, NY, NQ);
+        // limit_flow_kernel<<<gridDim, blockDim>>>(d_Q, NX, NY, NQ);
+        limit_flow<<<gridDim, blockDim>>>(d_Q, rh_floor_host, T_floor_host, aindex_host, Z_host, vhcf_host, NX, NY, NQ);       
         cudaDeviceSynchronize();
         get_sources_kernel<<<gridDim, blockDim>>>(d_Q, d_sources, d_eta, d_Tiev, d_Teev, d_nuei, d_kap_i, d_kap_e, d_vis_i, NX, NY, NQ, dt, dxi);
         cudaDeviceSynchronize();
         get_flux(blockDim, gridDim, d_Q, d_flux_x, d_flux_y, 0.75, NX, NY, NQ);
         advance_time_level_rz(blockDim, gridDim, d_Q, d_flux_x, d_flux_y, d_sources, d_Q, dxt, dyt, dt, NX, NY, NQ);
-        implicit_source2(blockDim, gridDim, d_Q, d_flux_x, d_flux_y, d_eta, d_Q, dxi, dyi, dt, NX, NY, NQ);
-        set_bc(blockDim, gridDim, d_Q, t + dt, dxi, dyi, k_las_host, f_las_host, NX, NY, NQ);
+        implicit_source2(blockDim, gridDim, d_Q, d_flux_x, d_flux_y, d_eta, d_Q, dxt, dyt, dt, NX, NY, NQ);
+        set_bc(blockDim, gridDim, d_Q, t + dt, dxi, dyi, k_las_host, f_las_host, Emax, Bmax, NX, NY, NQ);
 
         cudaMemcpy(Q, d_Q, NX * NY * NQ * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(eta, d_eta, NX * NY * sizeof(float), cudaMemcpyDeviceToHost);
         cudaMemcpy(flux_x, d_flux_x, NX * NY * NQ * sizeof(float), cudaMemcpyDeviceToHost);
         cudaMemcpy(flux_y, d_flux_y, NX * NY * NQ * sizeof(float), cudaMemcpyDeviceToHost);
 
@@ -1413,33 +1453,34 @@ int main() {
         get_flux(blockDim, gridDim, d_Q, d_flux_x, d_flux_y, 1, NX, NY, NQ);
         advance_time_level_rz(blockDim, gridDim, d_Q, d_flux_x, d_flux_y, d_sources, d_Q1, dxt, dyt, dt, NX, NY, NQ);
         implicit_source2(blockDim, gridDim, d_Q1, d_flux_x, d_flux_y, d_eta, d_Q1, dxi, dyi, dt, NX, NY, NQ);
-        limit_flow_kernel<<<gridDim, blockDim>>>(d_Q1, NX, NY, NQ);
+        limit_flow<<<gridDim, blockDim>>>(d_Q1, rh_floor_host, T_floor_host, aindex_host, Z_host, vhcf_host, NX, NY, NQ);       
         cudaDeviceSynchronize();
-        set_bc(blockDim, gridDim, d_Q1, t + dt, dxi, dyi, k_las_host, f_las_host, NX, NY, NQ);
+        set_bc(blockDim, gridDim, d_Q1, t + dt, dxi, dyi, k_las_host, f_las_host, Emax, Bmax, NX, NY, NQ);
 
         get_sources_kernel<<<gridDim, blockDim>>>(d_Q1, d_sources, d_eta, d_Tiev, d_Teev, d_nuei, d_kap_i, d_kap_e, d_vis_i, NX, NY, NQ, dt, dxi);
         cudaDeviceSynchronize();
         get_flux(blockDim, gridDim, d_Q1, d_flux_x, d_flux_y, 1, NX, NY, NQ);
         advance_time_level_rz(blockDim, gridDim, d_Q1, d_flux_x, d_flux_y, d_sources, d_Q2, dxt, dyt, dt, NX, NY, NQ);
         implicit_source2(blockDim, gridDim, d_Q2, d_flux_x, d_flux_y, d_eta, d_Q2, dxi, dyi, dt, NX, NY, NQ);
-        limit_flow_kernel<<<gridDim, blockDim>>>(d_Q2, NX, NY, NQ);
+        limit_flow<<<gridDim, blockDim>>>(d_Q2, rh_floor_host, T_floor_host, aindex_host, Z_host, vhcf_host, NX, NY, NQ);       
         cudaDeviceSynchronize();
 
         // Now add Q and Q2 together 
         add_Q_kernel<<<gridDim, blockDim>>>(d_Q, d_Q2, d_Q, NX, NY, NQ);
         cudaDeviceSynchronize();
-        limit_flow_kernel<<<gridDim, blockDim>>>(d_Q, NX, NY, NQ);
+        limit_flow<<<gridDim, blockDim>>>(d_Q, rh_floor_host, T_floor_host, aindex_host, Z_host, vhcf_host, NX, NY, NQ);       
         cudaDeviceSynchronize();
-        set_bc(blockDim, gridDim, d_Q, t + dt, dxi, dyi, k_las_host, f_las_host, NX, NY, NQ);
+        set_bc(blockDim, gridDim, d_Q, t + dt, dxi, dyi, k_las_host, f_las_host, Emax, Bmax, NX, NY, NQ);
 
         cudaMemcpy(Q, d_Q, NX * NY * NQ * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMemcpy(eta, d_eta, NX * NY * sizeof(float), cudaMemcpyDeviceToHost);
         cudaMemcpy(flux_x, d_flux_x, NX * NY * NQ * sizeof(float), cudaMemcpyDeviceToHost);
         cudaMemcpy(flux_y, d_flux_y, NX * NY * NQ * sizeof(float), cudaMemcpyDeviceToHost);
       }
 
       niter++;
       t += dt;
-      if (niter % 10 == 0) {
+      if (niter % 1000 == 0) {
         printf("\nIteration time: %f seconds\n", (float)clock() / CLOCKS_PER_SEC);
         printf("nout=%d\n", nout);
         printf("t= %e\n dt= %e\n niter= %d\n", t * 100, dt*100, niter);
@@ -1450,7 +1491,7 @@ int main() {
         check_Iv(NX - 1 / dxi, NY / 2);
         cudaDeviceSynchronize();
 
-        write_vtk("output", Q, flux_y, NX, NY, NQ, nout+1);  // Add timestep to the filename
+        write_vtk("output", Q, eta, NX, NY, NQ, nout+1);  // Add timestep to the filename
         nout++;
       }
     }

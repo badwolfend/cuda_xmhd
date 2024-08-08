@@ -17,6 +17,21 @@
       },
       "problemMatcher": ["$gcc"],
       "detail": "Generated task for building CUDA project"
+    },
+    {
+      "label": "Run Nsight Compute",
+      "type": "shell",
+      "command": "ncu",
+      "args": [
+        "${workspaceFolder}/perseus_cuda.exe"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [],
+      "detail": "Profile CUDA application with Nsight Compute"
     }
   ]
 }
+

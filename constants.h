@@ -6,105 +6,37 @@
 
 #define KTYPE float
 
-// extern KTYPE L0_host = 1.0e-3;
-// extern KTYPE t0_host = 100.0e-9;
-// extern KTYPE n0_host = 6.0e28;
-// extern KTYPE pi_host = 3.14159265;
-// extern KTYPE mu0_host = 4.e-7 * pi_host;
-// extern KTYPE eps0_host = 8.85e-12;
-// extern KTYPE mu_host = 27.0;
-// extern KTYPE mime_host = mu_host * 1836.0;
-// extern KTYPE memi_host = 1.0 / mime_host;
-// extern KTYPE elc_host = 1.6011E-19;
-// extern KTYPE kb_host = 1.38064E-23;
+#define NX (12*100)
+#define NY (12*100)
+#define NQ (17)
+#define BLOCK_SIZE (32)
 
-// extern KTYPE v0_host = L0_host / t0_host;
-// extern KTYPE b0_host = sqrt(mu_host * 1.67e-27 * mu0_host * n0_host) * v0_host;
-// extern KTYPE e0_host = v0_host * b0_host;
-// extern KTYPE j0_derived_host = b0_host / (mu0_host * L0_host);
-// extern KTYPE eta0_host = mu0_host * v0_host * L0_host;
-// extern KTYPE p0_host = mu_host * 1.67e-27 * n0_host * v0_host * v0_host;
-// extern KTYPE te0_host = p0_host / n0_host / 1.6e-19;
+// Plasma model flags
+#define XMHD true
+#define IMHD false
+#define YLBC 0
+#define YHBC 0
+#define XHBC 0
+#define XLBC 0
 
-// extern KTYPE cflm_host = 0.8;
-// extern KTYPE gma2_host = 2.8e-8 * mu0_host * L0_host * L0_host * n0_host;
-// extern KTYPE lil0_host = 2.6e5 * sqrt(mu_host / n0_host / mu0_host) / L0_host;
-// extern KTYPE cab_host = t0_host / L0_host / sqrt(eps0_host * mu0_host);
-// extern KTYPE ecyc_host = 1.76e11 * b0_host * t0_host;
-// extern KTYPE clt_host = cab_host / 1.0;
-// extern KTYPE cfva2_host = (cab_host / 1.0) * (cab_host / 1.0);
-// extern KTYPE vhcf_host = 1.0e6;
-// extern KTYPE rh_floor_host = 1.0E-9;
-// extern KTYPE T_floor_host = 0.026 / te0_host;
-// extern KTYPE rh_mult_host = 1.1;
-// extern KTYPE P_floor_host = rh_floor_host * T_floor_host;
-// extern KTYPE bapp_host = 0;
-
-// extern KTYPE Z_host = 4.0;
-// extern KTYPE er2_host = 1.0;
-// extern KTYPE aindex_host = 1.1;
-
-// extern KTYPE taui0_host = 6.2e14*sqrt(mu_host)/n0_host;
-// extern KTYPE taue0_host = 61.*taui0_host; 
-// extern KTYPE omi0_host = 9.6e7*Z_host*b0_host/mu_host;
-// extern KTYPE ome0_host = mime_host*omi0_host;
-// extern KTYPE visc0_host = 5.3*t0_host;  
-
-// extern KTYPE lamb_host = 527E-9 / L0_host;
-// extern KTYPE k_las_host = 2.0 * pi_host / lamb_host;
-// extern KTYPE f_las_host = clt_host * k_las_host;
-// extern KTYPE tperiod_host = 2.0 * pi_host / f_las_host;
-// extern KTYPE dgrate_host = 2.0 * lamb_host;
-
-// extern KTYPE L0_host;
-// extern KTYPE t0_host;
-// extern KTYPE n0_host;
-// extern KTYPE pi_host;
-// extern KTYPE mu0_host;
-// extern KTYPE eps0_host;
-// extern KTYPE mu_host;
-// extern KTYPE mime_host;
-// extern KTYPE memi_host;
-// extern KTYPE elc_host;
-// extern KTYPE kb_host;
-
-// extern KTYPE v0_host;
-// extern KTYPE b0_host;
-// extern KTYPE e0_host;
-// extern KTYPE j0_derived_host;
-// extern KTYPE eta0_host;
-// extern KTYPE p0_host;
-// extern KTYPE te0_host;
-
-// extern KTYPE cflm_host;
-// extern KTYPE gma2_host;
-// extern KTYPE lil0_host;
-// extern KTYPE cab_host;
-// extern KTYPE ecyc_host;
-// extern KTYPE clt_host;
-// extern KTYPE cfva2_host;
-// extern KTYPE vhcf_host;
-// extern KTYPE rh_floor_host;
-// extern KTYPE T_floor_host;
-// extern KTYPE rh_mult_host;
-// extern KTYPE P_floor_host;
-// extern KTYPE bapp_host;
-
-// extern KTYPE Z_host;
-// extern KTYPE er2_host;
-// extern KTYPE aindex_host;
-
-// extern KTYPE taui0_host;
-// extern KTYPE taue0_host; 
-// extern KTYPE omi0_host;
-// extern KTYPE ome0_host;
-// extern KTYPE visc0_host;  
-
-// extern KTYPE lamb_host;
-// extern KTYPE k_las_host;
-// extern KTYPE f_las_host;
-// extern KTYPE tperiod_host;
-// extern KTYPE dgrate_host;
+// Define Fortran-like parameters
+#define rh 0
+#define mx 1
+#define my 2
+#define mz 3
+#define en 4
+#define bx 5
+#define by 6
+#define bz 7
+#define ex 8
+#define ey 9
+#define ez 10
+#define jx 11
+#define jy 12
+#define jz 13
+#define et 14
+#define ne 15
+#define ep 16
 
 void initializeGlobals();
 
