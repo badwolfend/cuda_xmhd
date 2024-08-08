@@ -7,8 +7,9 @@
       "command": "nvcc",
       "args": [
         "-o",
-        "${workspaceFolder}/vector_add",
-        "${workspaceFolder}/vector_add.cu"
+        "${workspaceFolder}/perseus_cuda",
+        "${workspaceFolder}/perseus_cuda.cu"
+        // "${workspaceFolder}/cuda_test.cu"
       ],
       "group": {
         "kind": "build",

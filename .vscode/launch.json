@@ -6,7 +6,7 @@
       "name": "(gdb) Launch",
       "type": "cppvsdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/vector_add.exe",
+      "program": "${workspaceFolder}/perseus_cuda.exe",
       "args": [],
       "stopAtEntry": false,
       "cwd": "${workspaceFolder}",
