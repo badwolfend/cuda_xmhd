@@ -6,10 +6,11 @@
 
 #define KTYPE float
 
-#define NX (12*100)
-#define NY (12*100)
+#define NX (12*45)
+#define NY (12*45)
 #define NQ (17)
 #define BLOCK_SIZE (32)
+#define N_STREAMS (1)
 
 // Plasma model flags
 #define XMHD true

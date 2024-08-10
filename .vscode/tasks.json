@@ -11,6 +11,11 @@
         "${workspaceFolder}/perseus_cuda.cu"
         // "${workspaceFolder}/cuda_test.cu"
       ],
+      "options": {
+        "env": {
+          "NSIGHT_PERF_COUNTER_PERMISSION": "1"
+        }
+      },
       "group": {
         "kind": "build",
         "isDefault": true
@@ -23,6 +28,7 @@
       "type": "shell",
       "command": "ncu",
       "args": [
+        "--export", "${workspaceFolder}/profile_output.ncu-re",
         "${workspaceFolder}/perseus_cuda.exe"
       ],
       "group": {

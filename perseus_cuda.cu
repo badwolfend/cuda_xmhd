@@ -9,7 +9,6 @@ __global__ void compute_wr_wl(float *Qin, float *ff, float *cfr, float *wr, floa
 __global__ void compute_fr_fl(float *wr, float *wl, float *fr, float *fl, int n, int nq);
 __global__ void compute_dfr_dfl(float *fr, float *fl, float *dfrp, float *dfrm, float *dflp, float *dflm, int n, int nq);
 __global__ void compute_flux2(float *fr, float *fl, float *dfrp, float *dfrm, float *dflp, float *dflm, float *flux2, float sl, int n, int nq);
-__global__ void get_flux_kernel(float *Qin, float *flux_x, float *flux_y, float sl);
 __global__ void advance_time_level_rz_kernel(float *Qin, float *flux_x, float *flux_y, float *source, float *Qinp1, float dxt, float dyt, float dt, int nx, int ny) ;
 __global__ void limit_flow(float *Qin, float rh_floor, float T_floor, float aindex, float Z, float vhcf, int nx, int ny, int nq);
 __device__ float eta_s(float e_Temp, float Za, float dne, float cln_min, int tp);
@@ -126,7 +125,7 @@ void initializeGlobals() {
     tperiod_host = 2.0 * pi_host / f_las_host;
     dgrate_host = 2.0 * lamb_host;
 
-    PLas=1.e16;
+    PLas=1.e17;
     Emax=sqrt(2.*t0_host*PLas/(clt_host*L0_host*eps0_host));
     Bmax=(t0_host*Emax/(L0_host*clt_host));
     Emax=Emax/e0_host;
@@ -567,15 +566,42 @@ __global__ void copy3DTo2DSliceX(float *d_Qin, float *d_Qx, int nx, int ny, int 
   int q = blockIdx.y * blockDim.y + threadIdx.y;
 
   if (i < nx && q < nq) {
-      d_Qx[i * nq + q] = d_Qin[i * ny * nq + j * nq + q];
+    d_Qx[i * nq + q] = d_Qin[i * ny * nq + j * nq + q];
   }
 }
+
+// __global__ void copy3DTo2DSliceX(float *d_Qin, float *d_Qx, int nx, int ny, int nq, int j) {
+//   // Determine the size of the shared memory array
+//   extern __shared__ float shared_Qin[];
+
+//   int i = blockIdx.x * blockDim.x + threadIdx.x;
+//   int q = blockIdx.y * blockDim.y + threadIdx.y;
+
+//   // Calculate the 1D thread index within the block
+//   int threadIdx1D = threadIdx.y * blockDim.x + threadIdx.x;
+
+//   // Each thread loads its corresponding value from global memory into shared memory
+//   if (i < nx && q < nq) {
+//       int globalIdx = i * ny * nq + j * nq + q;
+//       shared_Qin[threadIdx1D] = d_Qin[globalIdx];
+//   }
+
+//   // Synchronize threads to ensure all data is loaded into shared memory
+//   __syncthreads();
+
+//   // Use the shared memory to copy the data to d_Qx
+//   if (i < nx && q < nq) {
+//       int idx2D = i * nq + q;
+//       d_Qx[idx2D] = shared_Qin[threadIdx1D];
+//   }
+// }
 
 __global__ void copy3DTo2DSliceY(float *d_Qin, float *d_Qy, int nx, int ny, int nq, int i) {
   int j = blockIdx.x * blockDim.x + threadIdx.x;
   int q = blockIdx.y * blockDim.y + threadIdx.y;
 
   if (j < nx && q < nq) {
+    
       d_Qy[j * nq + q] = d_Qin[i * ny * nq + j * nq + q];
   }
 }
@@ -602,8 +628,163 @@ __global__ void copy2DTo3DSliceY(float *d_Qy, float *d_Qin, int nx, int ny, int 
   }
 }
 
+// // Function to perform get_flux operations
+// void get_flux(dim3 bs, dim3 gs, float *d_Qin, float *d_flux_x, float *d_flux_y, float sl, int nx, int ny, int nq) {
+//   size_t size_3d = nx * ny * nq * sizeof(float);
+//   size_t size_2d_x = nx * nq * sizeof(float);
+//   size_t size_2d_y = ny * nq * sizeof(float);
+
+//   // Define grid and block dimensions
+//   dim3 bs1d(16);
+//   dim3 gridDimX((nx + bs1d.x - 1) / bs1d.x, 1);
+//   dim3 gridDimY((ny + bs1d.x - 1) / bs1d.x, 1);
+
+//   dim3 gridDimXQ((nx + bs.x - 1) / bs.x, (nq + bs.y - 1) / bs.y);
+//   dim3 gridDimYQ((ny + bs.x - 1) / bs.x, (nq + bs.y - 1) / bs.y);
+
+//   // Allocate memory on the device
+//   float *d_Qx, *d_Qy, *d_cfx, *d_ffx, *d_fx, *d_cfy, *d_ffy, *d_fy;
+//   float *d_wr, *d_wl, *d_fr, *d_fl, *d_dfrp, *d_dfrm, *d_dflp, *d_dflm;
+//   float *d_wry, *d_wly, *d_fry, *d_fly, *d_dfrpy, *d_dfrmy, *d_dflpy, *d_dflmy;
+//   int flag;
+//   cudaMalloc(&d_Qx, size_2d_x);
+//   cudaMalloc(&d_Qy, size_2d_y);
+//   cudaMalloc(&d_cfx, size_2d_x);
+//   cudaMalloc(&d_ffx, size_2d_x);
+//   cudaMalloc(&d_fx, size_2d_x);
+//   cudaMalloc(&d_cfy, size_2d_y);
+//   cudaMalloc(&d_ffy, size_2d_y);
+//   cudaMalloc(&d_fy, size_2d_y);
+//   cudaMalloc(&d_wr, size_2d_x);
+//   cudaMalloc(&d_wl, size_2d_x);
+//   cudaMalloc(&d_fr, size_2d_x);
+//   cudaMalloc(&d_fl, size_2d_x);
+//   cudaMalloc(&d_dfrp, size_2d_x);
+//   cudaMalloc(&d_dfrm, size_2d_x);
+//   cudaMalloc(&d_dflp, size_2d_x);
+//   cudaMalloc(&d_dflm, size_2d_x);
+
+//   cudaMalloc(&d_wry, size_2d_y);
+//   cudaMalloc(&d_wly, size_2d_y);
+//   cudaMalloc(&d_fry, size_2d_y);
+//   cudaMalloc(&d_fly, size_2d_y);
+//   cudaMalloc(&d_dfrpy, size_2d_y);
+//   cudaMalloc(&d_dfrmy, size_2d_y);
+//   cudaMalloc(&d_dflpy, size_2d_y);
+//   cudaMalloc(&d_dflmy, size_2d_y);
+//   flag = 0;
+
+
+//   // Create CUDA streams for concurrent kernel execution
+//   cudaStream_t stream1, stream2;
+//   cudaStreamCreate(&stream1);
+//   cudaStreamCreate(&stream2);
+
+//   // Launch kernels for each slice in the y-dimension
+//   for (int j = 0; j < ny; j++) {
+//     // Copy the slice from the 3D array to the 2D array
+//     // cudaMemcpy(d_Qx, d_Qin + j * nx * nq, size_2d_x, cudaMemcpyDeviceToDevice);
+//     copy3DTo2DSliceX<<<gridDimXQ, bs, 0, stream1>>>(d_Qin, d_Qx, nx, ny, nq, j);
+//     cudaDeviceSynchronize();
+    
+//     // Launch the kernel to copy the j-th slice to d_Qx
+//     // Launch calc_flux_x_kernel
+//     calc_flux_x_kernel<<<gridDimX, bs1d, 0, stream1>>>(d_Qx, d_cfx, d_ffx, nx, nq);
+//     cudaDeviceSynchronize();
+
+//     // Launch TVD kernels
+//     compute_wr_wl<<<gridDimXQ, bs, 0, stream1>>>(d_Qx, d_ffx, d_cfx, d_wr, d_wl, nx, nq, flag);
+//     cudaDeviceSynchronize();
+
+//     compute_fr_fl<<<gridDimXQ, bs, 0, stream1>>>(d_wr, d_wl, d_fr, d_fl, nx, nq);
+//     cudaDeviceSynchronize();
+
+//     compute_dfr_dfl<<<gridDimXQ, bs, 0, stream1>>>(d_fr, d_fl, d_dfrp, d_dfrm, d_dflp, d_dflm, nx, nq);
+//     cudaDeviceSynchronize();
+
+//     compute_flux2<<<gridDimXQ, bs, 0, stream1>>>(d_fr, d_fl, d_dfrp, d_dfrm, d_dflp, d_dflm, d_fx, sl, nx, nq);
+//     cudaDeviceSynchronize();
+
+//     // Copy results back to the corresponding slice in flux_x
+//     // cudaMemcpy(d_flux_x + j * nx * nq, d_fx, size_2d_x, cudaMemcpyDeviceToDevice);
+//     copy2DTo3DSliceX<<<gridDimXQ, bs, 0, stream1>>>(d_fx, d_flux_x, nx, ny, nq, j);
+//     cudaDeviceSynchronize();
+
+//   }
+
+//   // Launch kernels for each slice in the x-dimension
+//   for (int i = 0; i < nx; i++) {
+//     // // Copy the slice from the 3D array to the 2D array
+//     // cudaMemcpy(d_Qy, d_Qin + i * ny * nq, size_2d_y, cudaMemcpyDeviceToDevice);
+
+//     // Launch the kernel to copy the j-th slice to d_Qx
+//     copy3DTo2DSliceY<<<gridDimYQ, bs, 0, stream2>>>(d_Qin, d_Qy, nx, ny, nq, i);
+//     cudaDeviceSynchronize();
+
+//     // Launch calc_flux_y_kernel
+//     calc_flux_y_kernel<<<gridDimY, bs1d, 0, stream2>>>(d_Qy, d_cfy, d_ffy, ny, nq);
+//     cudaDeviceSynchronize();
+
+//     // // Launch TVD kernels
+//     if ( i == 4) {
+//       flag = 1;
+//     }
+//     else {
+//       flag = 0;
+//     }
+//     compute_wr_wl<<<gridDimYQ, bs, 0, stream2>>>(d_Qy, d_ffy, d_cfy, d_wry, d_wly, ny, nq, flag);
+//     cudaDeviceSynchronize();
+
+//     compute_fr_fl<<<gridDimYQ, bs, 0, stream2>>>(d_wry, d_wly, d_fry, d_fly, ny, nq);
+//     cudaDeviceSynchronize();
+
+//     compute_dfr_dfl<<<gridDimYQ, bs, 0, stream2>>>(d_fry, d_fly, d_dfrpy, d_dfrmy, d_dflpy, d_dflmy, ny, nq);
+//     cudaDeviceSynchronize();
+
+//     compute_flux2<<<gridDimYQ, bs, 0, stream2>>>(d_fry, d_fly, d_dfrpy, d_dfrmy, d_dflpy, d_dflmy, d_fy, sl, ny, nq);
+//     cudaDeviceSynchronize();
+
+//     // Copy results back to the corresponding slice in flux_y
+//     // cudaMemcpy(d_flux_y + i * ny * nq, d_fy, size_2d_y, cudaMemcpyDeviceToDevice);
+//     copy2DTo3DSliceY<<<gridDimYQ, bs, 0, stream2>>>(d_fy, d_flux_y, nx, ny, nq, i);
+//     cudaDeviceSynchronize();
+//   }
+//   // Clean up CUDA streams
+//   cudaStreamDestroy(stream1);
+//   cudaStreamDestroy(stream2);
+
+//   // Free device memory
+//   cudaFree(d_Qx);
+//   cudaFree(d_Qy);
+//   cudaFree(d_cfx);
+//   cudaFree(d_ffx);
+//   cudaFree(d_fx);
+//   cudaFree(d_cfy);
+//   cudaFree(d_ffy);
+//   cudaFree(d_fy);
+
+//   cudaFree(d_wr);
+//   cudaFree(d_wl);
+//   cudaFree(d_fr);
+//   cudaFree(d_fl);
+//   cudaFree(d_dfrp);
+//   cudaFree(d_dfrm);
+//   cudaFree(d_dflp);
+//   cudaFree(d_dflm);
+
+//   cudaFree(d_wry);
+//   cudaFree(d_wly);
+//   cudaFree(d_fry);
+//   cudaFree(d_fly);
+//   cudaFree(d_dfrpy);
+//   cudaFree(d_dfrmy);
+//   cudaFree(d_dflpy);
+//   cudaFree(d_dflmy);
+
+// }
+
 // Function to perform get_flux operations
-void get_flux(dim3 bs, dim3 gs, float *d_Qin, float *d_flux_x, float *d_flux_y, float sl, int nx, int ny, int nq) {
+void get_flux(dim3 bs, dim3 gs, int nStreams, float *d_Qin, float *d_flux_x, float *d_flux_y, float sl, int nx, int ny, int nq) {
   size_t size_3d = nx * ny * nq * sizeof(float);
   size_t size_2d_x = nx * nq * sizeof(float);
   size_t size_2d_y = ny * nq * sizeof(float);
@@ -615,6 +796,9 @@ void get_flux(dim3 bs, dim3 gs, float *d_Qin, float *d_flux_x, float *d_flux_y, 
 
   dim3 gridDimXQ((nx + bs.x - 1) / bs.x, (nq + bs.y - 1) / bs.y);
   dim3 gridDimYQ((ny + bs.x - 1) / bs.x, (nq + bs.y - 1) / bs.y);
+
+  // The size of the shared memory array in bytes
+  int sharedMemSize = BLOCK_SIZE * BLOCK_SIZE * sizeof(float);
 
   // Allocate memory on the device
   float *d_Qx, *d_Qy, *d_cfx, *d_ffx, *d_fx, *d_cfy, *d_ffy, *d_fy;
@@ -647,75 +831,71 @@ void get_flux(dim3 bs, dim3 gs, float *d_Qin, float *d_flux_x, float *d_flux_y, 
   cudaMalloc(&d_dflpy, size_2d_y);
   cudaMalloc(&d_dflmy, size_2d_y);
   flag = 0;
-  // Launch kernels for each slice in the y-dimension
-  for (int j = 0; j < ny; j++) {
+
+
+// Create CUDA streams for concurrent kernel execution
+cudaStream_t *streams = (cudaStream_t *)malloc(nStreams * sizeof(cudaStream_t));
+for (int i = 0; i < nStreams ; i++) {
+    cudaStreamCreate(&streams[i]);
+}
+
+// Launch kernels for each slice in the y-dimension
+for (int j = 0; j < ny; j++) {
+    int streamIdx = j % nStreams;
+
     // Copy the slice from the 3D array to the 2D array
-    // cudaMemcpy(d_Qx, d_Qin + j * nx * nq, size_2d_x, cudaMemcpyDeviceToDevice);
-    copy3DTo2DSliceX<<<gridDimXQ, bs>>>(d_Qin, d_Qx, nx, ny, nq, j);
-    cudaDeviceSynchronize();
-    
-    // Launch the kernel to copy the j-th slice to d_Qx
+    copy3DTo2DSliceX<<<gridDimXQ, bs, sharedMemSize, streams[streamIdx]>>>(d_Qin, d_Qx, nx, ny, nq, j);
+
     // Launch calc_flux_x_kernel
-    calc_flux_x_kernel<<<gridDimX, bs1d>>>(d_Qx, d_cfx, d_ffx, nx, nq);
-    cudaDeviceSynchronize();
+    calc_flux_x_kernel<<<gridDimX, bs1d, 0, streams[streamIdx]>>>(d_Qx, d_cfx, d_ffx, nx, nq);
 
     // Launch TVD kernels
-    compute_wr_wl<<<gridDimXQ, bs>>>(d_Qx, d_ffx, d_cfx, d_wr, d_wl, nx, nq, flag);
-    cudaDeviceSynchronize();
-
-    compute_fr_fl<<<gridDimXQ, bs>>>(d_wr, d_wl, d_fr, d_fl, nx, nq);
-    cudaDeviceSynchronize();
-
-    compute_dfr_dfl<<<gridDimXQ, bs>>>(d_fr, d_fl, d_dfrp, d_dfrm, d_dflp, d_dflm, nx, nq);
-    cudaDeviceSynchronize();
-
-    compute_flux2<<<gridDimXQ, bs>>>(d_fr, d_fl, d_dfrp, d_dfrm, d_dflp, d_dflm, d_fx, sl, nx, nq);
-    cudaDeviceSynchronize();
+    compute_wr_wl<<<gridDimXQ, bs, 0, streams[streamIdx]>>>(d_Qx, d_ffx, d_cfx, d_wr, d_wl, nx, nq, flag);
+    compute_fr_fl<<<gridDimXQ, bs, 0, streams[streamIdx]>>>(d_wr, d_wl, d_fr, d_fl, nx, nq);
+    compute_dfr_dfl<<<gridDimXQ, bs, 0, streams[streamIdx]>>>(d_fr, d_fl, d_dfrp, d_dfrm, d_dflp, d_dflm, nx, nq);
+    compute_flux2<<<gridDimXQ, bs, 0, streams[streamIdx]>>>(d_fr, d_fl, d_dfrp, d_dfrm, d_dflp, d_dflm, d_fx, sl, nx, nq);
 
     // Copy results back to the corresponding slice in flux_x
-    // cudaMemcpy(d_flux_x + j * nx * nq, d_fx, size_2d_x, cudaMemcpyDeviceToDevice);
-    copy2DTo3DSliceX<<<gridDimXQ, bs>>>(d_fx, d_flux_x, nx, ny, nq, j);
-    cudaDeviceSynchronize();
+    copy2DTo3DSliceX<<<gridDimXQ, bs, 0, streams[streamIdx]>>>(d_fx, d_flux_x, nx, ny, nq, j);
+}
 
-  }
+// Synchronize all streams for y-dimension operations
+for (int i = 0; i < nStreams; i++) {
+    cudaStreamSynchronize(streams[i]);
+}
 
-  // Launch kernels for each slice in the x-dimension
-  for (int i = 0; i < nx; i++) {
-    // // Copy the slice from the 3D array to the 2D array
-    // cudaMemcpy(d_Qy, d_Qin + i * ny * nq, size_2d_y, cudaMemcpyDeviceToDevice);
+// Launch kernels for each slice in the x-dimension
+for (int i = 0; i < nx; i++) {
+    int streamIdx = i % nStreams;
 
-    // Launch the kernel to copy the j-th slice to d_Qx
-    copy3DTo2DSliceY<<<gridDimYQ, bs>>>(d_Qin, d_Qy, nx, ny, nq, i);
-    cudaDeviceSynchronize();
+    // Copy the slice from the 3D array to the 2D array
+    copy3DTo2DSliceY<<<gridDimYQ, bs, 0, streams[streamIdx]>>>(d_Qin, d_Qy, nx, ny, nq, i);
 
     // Launch calc_flux_y_kernel
-    calc_flux_y_kernel<<<gridDimY, bs1d>>>(d_Qy, d_cfy, d_ffy, ny, nq);
-    cudaDeviceSynchronize();
+    calc_flux_y_kernel<<<gridDimY, bs1d, 0, streams[streamIdx]>>>(d_Qy, d_cfy, d_ffy, ny, nq);
 
-    // // Launch TVD kernels
-    if ( i == 4) {
-      flag = 1;
-    }
-    else {
-      flag = 0;
-    }
-    compute_wr_wl<<<gridDimYQ, bs>>>(d_Qy, d_ffy, d_cfy, d_wry, d_wly, ny, nq, flag);
-    cudaDeviceSynchronize();
-
-    compute_fr_fl<<<gridDimYQ, bs>>>(d_wry, d_wly, d_fry, d_fly, ny, nq);
-    cudaDeviceSynchronize();
-
-    compute_dfr_dfl<<<gridDimYQ, bs>>>(d_fry, d_fly, d_dfrpy, d_dfrmy, d_dflpy, d_dflmy, ny, nq);
-    cudaDeviceSynchronize();
-
-    compute_flux2<<<gridDimYQ, bs>>>(d_fry, d_fly, d_dfrpy, d_dfrmy, d_dflpy, d_dflmy, d_fy, sl, ny, nq);
-    cudaDeviceSynchronize();
+    // Launch TVD kernels
+    flag = (i == 4) ? 1 : 0;
+    compute_wr_wl<<<gridDimYQ, bs, 0, streams[streamIdx]>>>(d_Qy, d_ffy, d_cfy, d_wry, d_wly, ny, nq, flag);
+    compute_fr_fl<<<gridDimYQ, bs, 0, streams[streamIdx]>>>(d_wry, d_wly, d_fry, d_fly, ny, nq);
+    compute_dfr_dfl<<<gridDimYQ, bs, 0, streams[streamIdx]>>>(d_fry, d_fly, d_dfrpy, d_dfrmy, d_dflpy, d_dflmy, ny, nq);
+    compute_flux2<<<gridDimYQ, bs, 0, streams[streamIdx]>>>(d_fry, d_fly, d_dfrpy, d_dfrmy, d_dflpy, d_dflmy, d_fy, sl, ny, nq);
 
     // Copy results back to the corresponding slice in flux_y
-    // cudaMemcpy(d_flux_y + i * ny * nq, d_fy, size_2d_y, cudaMemcpyDeviceToDevice);
-    copy2DTo3DSliceY<<<gridDimYQ, bs>>>(d_fy, d_flux_y, nx, ny, nq, i);
-    cudaDeviceSynchronize();
-  }
+    copy2DTo3DSliceY<<<gridDimYQ, bs, 0, streams[streamIdx]>>>(d_fy, d_flux_y, nx, ny, nq, i);
+}
+
+// Synchronize all streams for x-dimension operations
+for (int i = 0; i < nStreams; i++) {
+    cudaStreamSynchronize(streams[i]);
+}
+
+// Clean up CUDA streams
+for (int i = 0; i < nStreams; i++) {
+    cudaStreamDestroy(streams[i]);
+}
+
+free(streams);
 
   // Free device memory
   cudaFree(d_Qx);
@@ -747,12 +927,13 @@ void get_flux(dim3 bs, dim3 gs, float *d_Qin, float *d_flux_x, float *d_flux_y, 
 
 }
 
+
 __global__ void calc_flux_x_kernel(float *Qx, float *cfx, float *flx, int nx, int nq) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   int idx = i* nq;
 
   if (i >= nx) return;
-  if (i <= 0) return;
+  if (i < 0) return;
 
   float dni, dnii, vx, vy, vz, dne, dnei, vex, vey, vez;
   float hx, hy, hz, Pri, Pre, P, asqr, vf1, vf2, vf3;
@@ -838,7 +1019,7 @@ __global__ void calc_flux_y_kernel(float* Qy, float* cfy, float* fly, int ny, in
   int idx = j* nq;
 
   if (j >= ny) return;
-  if (j <= 0) return;
+  if (j < 0) return;
 
   float vx, vy, vz, P, vf1, vf2, vf3, asqr, hx, hy, hz, dni, dne, dnii, dnei, vex, vey, vez, Pri, Pre;
   float fac = 1.0f / (mime + Z);
@@ -924,7 +1105,7 @@ __global__ void compute_wr_wl(float *Qin, float *ff, float *cfr, float *wr, floa
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   int q = blockIdx.y * blockDim.y + threadIdx.y;
   
-  if (i < n && q < nq) {
+  if (i < n && q < nq ) {
     int idx = i * nq + q;
     wr[idx] = cfr[idx] * Qin[idx] + ff[idx];
     wl[idx] = cfr[idx] * Qin[idx] - ff[idx];
@@ -935,7 +1116,7 @@ __global__ void compute_fr_fl(float *wr, float *wl, float *fr, float *fl, int n,
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   int q = blockIdx.y * blockDim.y + threadIdx.y;
   
-  if (i < n && q < nq) {
+  if (i < n && q < nq ) {
     int idx = i * nq + q;
     fr[idx] = wr[idx];
     fl[idx] = wl[((i + 1) % n) * nq + q];
@@ -947,7 +1128,7 @@ __global__ void compute_dfr_dfl(float *fr, float *fl, float *dfrp, float *dfrm, 
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   int q = blockIdx.y * blockDim.y + threadIdx.y;
 
-  if (i < n && q < nq) {
+  if (i < n && q < nq ) {
     int idx = i * nq + q;
     dfrp[idx] = fr[((i + 1) % n) * nq + q] - fr[idx];
     dfrm[idx] = fr[idx] - fr[((i - 1 + n) % n) * nq + q];
@@ -961,24 +1142,32 @@ __global__ void compute_flux2(float *fr, float *fl, float *dfrp, float *dfrm, fl
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   int q = blockIdx.y * blockDim.y + threadIdx.y;
 
-  if (i < n && q < nq) {
+  if (i < n && q < nq ) {
     int idx = i * nq + q;
     
     float dfr, dfl;
+    float epsilon = 1e-10f;
 
     if (dfrp[idx] * dfrm[idx] > 0) {
-      dfr = dfrp[idx] * dfrm[idx] / (dfrp[idx] + dfrm[idx]);
+      // dfr = dfrp[idx] * dfrm[idx] / (dfrp[idx] + dfrm[idx]);
+      float denom = dfrp[idx] + dfrm[idx];
+      dfr = denom > epsilon ? (dfrp[idx] * dfrm[idx]) / denom : 0.0f;
     } else {
       dfr = 0.0f;
     }
 
     if (dflp[idx] * dflm[idx] > 0) {
-      dfl = dflp[idx] * dflm[idx] / (dflp[idx] + dflm[idx]);
+      float denom = dflp[idx] + dflm[idx];
+      dfl = denom > epsilon ? (dflp[idx] * dflm[idx]) / denom : 0.0f;
+      // dfl = dflp[idx] * dflm[idx] / (dflp[idx] + dflm[idx]);
     } else {
       dfl = 0.0f;
     }
 
     flux2[idx] = 0.5f * (fr[idx] - fl[idx] + sl * (dfr - dfl));
+    // if (flux2[idx] > 100) {
+    //   printf("i: %d, q: %d, flux2: %f\n", i, q, flux2[idx]);
+    // }
   }
 }
 
@@ -989,7 +1178,7 @@ __global__ void get_sources_kernel(
   int idxnQ = i* (ny * nq) + j* nq ;
   int idx = i* (ny * 1) + j* 1;
 
-  if (i < nx && j < ny) {
+  if (i < nx && j < ny && i > 0 && j > 0) {
     float ri, vx, vy, vz, P, viscx = 0.0f, viscy = 0.0f, viscz = 0.0f, mage2, magi2, toi, viscoeff, dx, mui, t0i, dx2;
     float gyro, vix, viy, viz, vxr, vyr, vzr, vex, vey, vez, ux, uy, uz, linv, Zi, dnei, dni, dne, dnii, Zin, dti, fac, theta_np;
     float Cln, eta_s;
@@ -1259,7 +1448,7 @@ void initial_condition(dim3 bs, dim3 gs, float *Qin, float rh_floor, float Z, fl
   cudaDeviceSynchronize();
 }
 
-void write_vtk(const char* prefix, float* Q, float* fluxx, int nx, int ny, int nq, int timestep) {
+void write_vtk(const char* prefix, float* Q, float* eta, float* fluxx, int nx, int ny, int nq, int timestep) {
   char filename[256];
   float dne, vex, vey, vez, P;
 
@@ -1319,9 +1508,18 @@ void write_vtk(const char* prefix, float* Q, float* fluxx, int nx, int ny, int n
   fprintf(file, "LOOKUP_TABLE default\n");
   for (int j = 0; j < ny; ++j) {
       for (int i = 0; i < nx; ++i) {
-          fprintf(file, "%e\n", eta0_host*fluxx[i * ny + j  ]);
+          fprintf(file, "%e\n", eta0_host*eta[i * ny + j  ]);
       }
   }
+
+    // Write scalar field: fluxx
+    fprintf(file, "SCALARS fluxx float 1\n");
+    fprintf(file, "LOOKUP_TABLE default\n");
+    for (int j = 0; j < ny; ++j) {
+        for (int i = 0; i < nx; ++i) {
+            fprintf(file, "%e\n", fluxx[i * ny * nq + j * nq + ez]);
+        }
+    }
 
   // Write vector field: B
   fprintf(file, "VECTORS B float\n");
@@ -1344,6 +1542,15 @@ void write_vtk(const char* prefix, float* Q, float* fluxx, int nx, int ny, int n
   for (int j = 0; j < ny; ++j) {
       for (int i = 0; i < nx; ++i) {
           fprintf(file, "%e %e %e\n", j0_derived_host*Q[i * ny * nq + j * nq + jx], j0_derived_host*Q[i * ny * nq + j * nq + jy], j0_derived_host*Q[i * ny * nq + j * nq + jz]);
+      }
+  }
+
+  // Write vector field: Vion
+  fprintf(file, "VECTORS U float\n");
+  for (int j = 0; j < ny; ++j) {
+      for (int i = 0; i < nx; ++i) {
+          float dnii = 1.0f / Q[i * ny * nq + j * nq + rh];
+          fprintf(file, "%e %e %e\n", v0_host*dnii*Q[i * ny * nq + j * nq + mx], v0_host*dnii*Q[i * ny * nq + j * nq + my], v0_host*dnii*Q[i * ny * nq + j * nq + mz]);
       }
   }
 
@@ -1420,10 +1627,10 @@ int main() {
     initial_condition(blockDim, gridDim, d_Q, rh_floor_host, Z_host, T_floor_host, aindex_host, bapp_host, b0_host, NX, NY, NQ);
     fill_rod<<<gridDim, blockDim>>>(d_Q, NX, NY, NQ, te0_host, lxu, lyu, n0_host, Z_host, lamb_host, rh_floor_host, dgrate, dxi, dyi);
     cudaMemcpy(Q, d_Q, NX * NY * NQ * sizeof(float), cudaMemcpyDeviceToHost);
-    write_vtk("output", Q, eta, NX, NY, NQ, nout);  // Add timestep to the filename
+    write_vtk("output", Q, eta, flux_x, NX, NY, NQ, nout);  // Add timestep to the filename
 
     if (true) {
-    while (nprint <= 10) {
+    while (nprint < 200) {
       get_min_dt(&dt, 0.5, dxi, clt_host);
 
       dxt = dt * dxi;
@@ -1435,7 +1642,7 @@ int main() {
         cudaDeviceSynchronize();
         get_sources_kernel<<<gridDim, blockDim>>>(d_Q, d_sources, d_eta, d_Tiev, d_Teev, d_nuei, d_kap_i, d_kap_e, d_vis_i, NX, NY, NQ, dt, dxi);
         cudaDeviceSynchronize();
-        get_flux(blockDim, gridDim, d_Q, d_flux_x, d_flux_y, 0.75, NX, NY, NQ);
+        get_flux(blockDim, gridDim, N_STREAMS, d_Q, d_flux_x, d_flux_y, 0.75, NX, NY, NQ);
         advance_time_level_rz(blockDim, gridDim, d_Q, d_flux_x, d_flux_y, d_sources, d_Q, dxt, dyt, dt, NX, NY, NQ);
         implicit_source2(blockDim, gridDim, d_Q, d_flux_x, d_flux_y, d_eta, d_Q, dxt, dyt, dt, NX, NY, NQ);
         set_bc(blockDim, gridDim, d_Q, t + dt, dxi, dyi, k_las_host, f_las_host, Emax, Bmax, NX, NY, NQ);
@@ -1450,7 +1657,7 @@ int main() {
       if (iorder == 2) {
         get_sources_kernel<<<gridDim, blockDim>>>(d_Q, d_sources, d_eta, d_Tiev, d_Teev, d_nuei, d_kap_i, d_kap_e, d_vis_i, NX, NY, NQ, dt, dxi);
         cudaDeviceSynchronize();
-        get_flux(blockDim, gridDim, d_Q, d_flux_x, d_flux_y, 1, NX, NY, NQ);
+        get_flux(blockDim, gridDim, N_STREAMS, d_Q, d_flux_x, d_flux_y, 1, NX, NY, NQ);
         advance_time_level_rz(blockDim, gridDim, d_Q, d_flux_x, d_flux_y, d_sources, d_Q1, dxt, dyt, dt, NX, NY, NQ);
         implicit_source2(blockDim, gridDim, d_Q1, d_flux_x, d_flux_y, d_eta, d_Q1, dxi, dyi, dt, NX, NY, NQ);
         limit_flow<<<gridDim, blockDim>>>(d_Q1, rh_floor_host, T_floor_host, aindex_host, Z_host, vhcf_host, NX, NY, NQ);       
@@ -1459,7 +1666,7 @@ int main() {
 
         get_sources_kernel<<<gridDim, blockDim>>>(d_Q1, d_sources, d_eta, d_Tiev, d_Teev, d_nuei, d_kap_i, d_kap_e, d_vis_i, NX, NY, NQ, dt, dxi);
         cudaDeviceSynchronize();
-        get_flux(blockDim, gridDim, d_Q1, d_flux_x, d_flux_y, 1, NX, NY, NQ);
+        get_flux(blockDim, gridDim, N_STREAMS, d_Q1, d_flux_x, d_flux_y, 1, NX, NY, NQ);
         advance_time_level_rz(blockDim, gridDim, d_Q1, d_flux_x, d_flux_y, d_sources, d_Q2, dxt, dyt, dt, NX, NY, NQ);
         implicit_source2(blockDim, gridDim, d_Q2, d_flux_x, d_flux_y, d_eta, d_Q2, dxi, dyi, dt, NX, NY, NQ);
         limit_flow<<<gridDim, blockDim>>>(d_Q2, rh_floor_host, T_floor_host, aindex_host, Z_host, vhcf_host, NX, NY, NQ);       
@@ -1483,15 +1690,15 @@ int main() {
       if (niter % 1000 == 0) {
         printf("\nIteration time: %f seconds\n", (float)clock() / CLOCKS_PER_SEC);
         printf("nout=%d\n", nout);
-        printf("t= %e\n dt= %e\n niter= %d\n", t * 100, dt*100, niter);
-        printf("dxt= %e, dyt= %e\n", dxi*dt, dyi*dt, niter);
+        printf("t= %e ns, dt= %e ns, niter= %d\n", t * 100, dt*100, niter);
+        // printf("dxt= %e, dyt= %e\n", dxi*dt, dyi*dt, niter);
         // printf("lambda= %e, test= %e, NX= %d, dx= %e, dy= %e\n", lamb_host, lamb_host/NX, NX, dx, dy);
         nprint++;
 
         check_Iv(NX - 1 / dxi, NY / 2);
         cudaDeviceSynchronize();
 
-        write_vtk("output", Q, eta, NX, NY, NQ, nout+1);  // Add timestep to the filename
+        write_vtk("output", Q, eta, flux_x, NX, NY, NQ, nout+1);  // Add timestep to the filename
         nout++;
       }
     }
