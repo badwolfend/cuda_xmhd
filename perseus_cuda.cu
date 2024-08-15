@@ -209,10 +209,120 @@ __device__ float rc(int i) {
   return 1.0f;
 }
 
+
+__global__ void advance_time_level_rz_kernel_sm(float *Qin, float *flux_x, float *flux_y, float *source, float *Qinp1, float mdxt, float mdyt, float dt, int nx, int ny, int nq) {
+  // Calculate shared memory size based on the number of threads and nq
+  extern __shared__ float sharedMem[];
+
+  // Allocate shared memory with halo cells (1 cell padding in each direction)
+  int haloSizeX = blockDim.x + 2; // +2 for the halo cells on both sides
+  int haloSizeY = blockDim.y + 2; // +2 for the halo cells on both sides
+  float *shQin = &sharedMem[0];
+  float *shFluxX = &sharedMem[haloSizeX * haloSizeY * nq];
+  float *shFluxY = &sharedMem[2 * haloSizeX * haloSizeY * nq];
+  float *shSource = &sharedMem[3 * haloSizeX * haloSizeY * nq];
+
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  int j = blockIdx.y * blockDim.y + threadIdx.y;
+
+  // Calculate thread indices within the shared memory block
+  int sh_i = threadIdx.x + 1; // Offset by 1 to account for halo cells
+  int sh_j = threadIdx.y + 1; // Offset by 1 to account for halo cells
+  int threadIdx2D = sh_j * haloSizeX + sh_i;
+
+  // Load the main block data into shared memory, including halo cells
+  for (int k = 0; k < nq; ++k) {
+      int globalIndex = i * (ny * nq) + j * nq + k;
+
+      // Load the central block
+      shQin[threadIdx2D * nq + k] = (i < nx && j < ny) ? Qin[globalIndex] : 0.0f;
+      shFluxX[threadIdx2D * nq + k] = (i < nx && j < ny) ? flux_x[globalIndex] : 0.0f;
+      shFluxY[threadIdx2D * nq + k] = (i < nx && j < ny) ? flux_y[globalIndex] : 0.0f;
+      shSource[threadIdx2D * nq + k] = (i < nx && j < ny) ? source[globalIndex] : 0.0f;
+
+      // Load halo cells
+      if (threadIdx.x == 0 && i > 0) {
+          shQin[(sh_j * haloSizeX) * nq + (sh_i - 1) * nq + k] = Qin[(i-1) * (ny * nq) + j * nq + k];
+          shFluxX[(sh_j * haloSizeX) * nq + (sh_i - 1) * nq + k] = flux_x[(i-1) * (ny * nq) + j * nq + k];
+          shFluxY[(sh_j * haloSizeX) * nq + (sh_i - 1) * nq + k] = flux_y[(i-1) * (ny * nq) + j * nq + k];
+      }
+      if (threadIdx.x == blockDim.x - 1 && i < nx-1) {
+          shQin[(sh_j * haloSizeX) * nq + (sh_i + 1) * nq + k] = Qin[(i+1) * (ny * nq) + j * nq + k];
+          shFluxX[(sh_j * haloSizeX) * nq + (sh_i + 1) * nq + k] = flux_x[(i+1) * (ny * nq) + j * nq + k];
+          shFluxY[(sh_j * haloSizeX) * nq + (sh_i + 1) * nq + k] = flux_y[(i+1) * (ny * nq) + j * nq + k];
+      }
+      if (threadIdx.y == 0 && j > 0) {
+          shQin[((sh_j - 1) * haloSizeX) * nq + sh_i * nq + k] = Qin[i * (ny * nq) + (j-1) * nq + k];
+          shFluxX[((sh_j - 1) * haloSizeX) * nq + sh_i * nq + k] = flux_x[i * (ny * nq) + (j-1) * nq + k];
+          shFluxY[((sh_j - 1) * haloSizeX) * nq + sh_i * nq + k] = flux_y[i * (ny * nq) + (j-1) * nq + k];
+      }
+      if (threadIdx.y == blockDim.y - 1 && j < ny-1) {
+          shQin[((sh_j + 1) * haloSizeX) * nq + sh_i * nq + k] = Qin[i * (ny * nq) + (j+1) * nq + k];
+          shFluxX[((sh_j + 1) * haloSizeX) * nq + sh_i * nq + k] = flux_x[i * (ny * nq) + (j+1) * nq + k];
+          shFluxY[((sh_j + 1) * haloSizeX) * nq + sh_i * nq + k] = flux_y[i * (ny * nq) + (j+1) * nq + k];
+      }
+  }
+
+  // Synchronize to ensure all data is loaded into shared memory
+  __syncthreads();
+
+  // Perform the calculations using shared memory with halo cells
+  if (i >= 2 && i < nx-1 && j >= 2 && j < ny-1) {
+      float rbp = 0.5f * (rc(i+1) + rc(i));
+      float rbm = 0.5f * (rc(i) + rc(i-1));
+      float rci = 1.0f / rc(i);
+
+      for (int k = 0; k < nq; ++k) {
+          int idx_i_j = threadIdx2D * nq + k;
+          int idx_im1_j = ((sh_i - 1) * haloSizeX + sh_j) * nq + k;
+          int idx_ip1_j = ((sh_i + 1) * haloSizeX + sh_j) * nq + k;
+          int idx_i_jm1 = (sh_i * haloSizeX + (sh_j - 1)) * nq + k;
+          int idx_i_jp1 = (sh_i * haloSizeX + (sh_j + 1)) * nq + k;
+
+          Qinp1[i * (ny * nq) + j * nq + k] = shQin[idx_i_j]
+                                              - mdxt * (shFluxX[idx_ip1_j] * rbp - shFluxX[idx_im1_j] * rbm)
+                                              - mdyt * (shFluxY[idx_i_jp1] - shFluxY[idx_i_jm1]) * rci
+                                              + dt * shSource[idx_i_j];
+
+          if (isnan(Qinp1[i * (ny * nq) + j * nq + k])) {
+              printf("NaN encountered in cell i=%d j=%d %e. Exiting...\n", i, j, Qinp1[i * (ny * nq) + j * nq + k]);
+              return;
+          }
+
+          Qinp1[i * (ny * nq) + j * nq + k] *= rci;
+      }
+  }
+}
+
 __global__ void advance_time_level_rz_kernel(float *Qin, float *flux_x, float *flux_y, float *source, float *Qinp1, float mdxt, float mdyt, float dt, int nx, int ny, int nq) {
 
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   int j = blockIdx.y * blockDim.y + threadIdx.y;
+
+  // float rbp = 0.5f * (rc(i+1) + rc(i));
+  // float rbm = 0.5f * (rc(i) + rc(i-1));
+  // float rci = 1.0f / rc(i);
+  //   if (i >= 2 && i < nx-1 && j >= 2 && j < ny-1) {
+
+  // for (int k = 0; k < nq; ++k) {
+  //   int idxnQ = i* (ny * nq) + j* nq +k;
+  //   int idxnQ_ip1 = (i+1)* (ny * nq) + j* nq+k ;
+  //   int idxnQ_im1 = (i-1)* (ny * nq) + j* nq +k;
+  //   int idxnQ_jp1 = i* (ny * nq) + (j+1)* nq +k;
+  //   int idxnQ_jm1 = i* (ny * nq) + (j-1)* nq +k;
+
+  //   Qinp1[i * (ny * nq) + j * nq + k] = Qin[idxnQ]
+  //   - mdxt * (flux_x[idxnQ] * rbp - flux_x[idxnQ_im1] * rbm)
+  //   - mdyt * (flux_y[idxnQ] - flux_y[idxnQ_jm1]) * rci
+  //   + dt * source[idxnQ];
+
+  //   if (isnan(Qinp1[i * (ny * nq) + j * nq + k])) {
+  //   printf("NaN encountered in cell i=%d j=%d %e. Exiting...\n", i, j, Qinp1[i * (ny * nq) + j * nq + k]);
+  //   return;
+  //   }
+  //   }
+  // }
+
   int idxnQ = i* (ny * nq) + j* nq ;
   int idxnQ_ip1 = (i+1)* (ny * nq) + j* nq ;
   int idxnQ_im1 = (i-1)* (ny * nq) + j* nq ;
@@ -322,8 +432,19 @@ __global__ void advance_time_level_rz_kernel(float *Qin, float *flux_x, float *f
 }
 
 void advance_time_level_rz(dim3 bs, dim3 gs, float *Qin, float *flux_x, float *flux_y, float *source, float *Qinp1, float mdxt, float mdyt, float dt, int nx, int ny, int nq) {
-  // Launch the kernel
-  advance_time_level_rz_kernel<<<gs, bs>>>(Qin, flux_x, flux_y, source, Qinp1, mdxt, mdyt, dt, nx, ny, nq);
+
+  if (1==2) {
+    int blockSizeX = 8; // Example block size, adjust as needed
+    int blockSizeY = 8;
+    dim3 threadsPerBlock(blockSizeX, blockSizeY);
+    dim3 numBlocks((nx + blockSizeX - 1) / blockSizeX, (ny + blockSizeY - 1) / blockSizeY);
+    int sharedMemSize = 4 * (blockSizeX +2)* (blockSizeY+2) * nq * sizeof(float);
+    printf("Shared memory required per block: %d bytes\n", sharedMemSize);
+    advance_time_level_rz_kernel_sm<<<numBlocks, threadsPerBlock, sharedMemSize>>>(Qin, flux_x, flux_y, source, Qinp1, mdxt, mdyt, dt, nx, ny, nq);
+  }
+  else {
+    advance_time_level_rz_kernel<<<gs, bs>>>(Qin, flux_x, flux_y, source, Qinp1, mdxt, mdyt, dt, nx, ny, nq);
+  }
 
   // Synchronize to check for any kernel launch errors
   cudaDeviceSynchronize();
@@ -1559,6 +1680,11 @@ void write_vtk(const char* prefix, float* Q, float* eta, float* fluxx, int nx, i
 
 
 int main() {
+  cudaDeviceProp prop;
+  cudaGetDeviceProperties(&prop, 0);  // Assuming you're using device 0
+
+  printf("Total available shared memory per block: %d bytes\n", prop.sharedMemPerBlock);
+
     // Initialize constants
     initialize_constants();
     float *Q, *flux_x, *flux_y, *sources, *Q1, *Q2, *Q3, *Q4, *eta, *ect, *Tiev, *Teev, *nuei, *kap_i, *kap_e, *vis_i;
@@ -1630,7 +1756,8 @@ int main() {
     write_vtk("output", Q, eta, flux_x, NX, NY, NQ, nout);  // Add timestep to the filename
 
     if (true) {
-    while (nprint < 200) {
+    while (nprint < 10) {
+      
       get_min_dt(&dt, 0.5, dxi, clt_host);
 
       dxt = dt * dxi;
