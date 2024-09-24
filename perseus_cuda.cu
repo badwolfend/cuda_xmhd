@@ -70,6 +70,8 @@ KTYPE dgrate_host;
 KTYPE PLas;
 KTYPE Emax;
 KTYPE Bmax;
+KTYPE focal_length;
+KTYPE w0;
 
 static int isInitialized = 0;
 
@@ -130,6 +132,8 @@ void initializeGlobals() {
     Bmax=(t0_host*Emax/(L0_host*clt_host));
     Emax=Emax/e0_host;
     Bmax=Bmax/b0_host;
+    focal_length = 12.0*lamb_host/3.0;
+    w0 = 1.0*lamb_host;
 
     isInitialized = 1;
   }
@@ -484,11 +488,18 @@ __global__ void limit_flow(float *Qin, float rh_floor, float T_floor, float aind
 
 }
 
-__global__ void set_bc_kernel(float *Qin, float t, float dxi, float dyi, float k_las, float f_las, float Emax, float Bmax, int nx, int ny, int nq) {
+__global__ void set_bc_kernel(float *Qin, float t, float dxi, float dyi, float k_las, float f_las, float Emax, float Bmax, int nx, int ny, int nq, float focus_distance, float w0) {
 
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   int j = blockIdx.y * blockDim.y + threadIdx.y;
   int idxnQ = i* (ny * nq) + j* nq ;
+
+  // Laser beam parameters
+  float lambda = 2.0f * pi / k_las;  // Wavelength
+  float focus_x =0.5f * xc(nx , dxi);  // Focus in the center of the domain along x-axis
+  float focus_y = 0.0f;  // Focus in the center of the domain along y-axis
+  float z0 =focus_distance;        // Focal point distance from the boundary
+  float z_R = pi * w0 * w0 / lambda; // Rayleigh range
 
   // Handle the left and right boundary conditions
   if (j < ny) {
@@ -505,9 +516,27 @@ __global__ void set_bc_kernel(float *Qin, float t, float dxi, float dyi, float k
           Qin[0 * ny * nq + j * nq + l] = Qin[1 * ny * nq + j * nq + l];
 
           // Laser boundary conditions
-          Qin[i * ny * nq + j * nq + by] = -1.0f*Bmax*cos(k_las * xc(i, dxi) - f_las * t);
-          Qin[i * ny * nq + j * nq + ez] = 1.0f*Emax*cos(k_las * xc(i, dxi) - f_las * t);
+          // Qin[i * ny * nq + j * nq + by] = -1.0f*Bmax*cos(k_las * xc(i, dxi) - f_las * t);
+          // Qin[i * ny * nq + j * nq + ez] = 1.0f*Emax*cos(k_las * xc(i, dxi) - f_las * t);
 
+          // Calculate spatial phase shift for focusing
+          float x = xc(i, dxi);
+          float y = yc(j , dyi);
+          float hlyu = yc(ny, dyi)/2.0;  // Focus in the center of the domain along y-axis
+          y = y - hlyu;  // Shift the focus to the center of the domain along y-axis
+          float z = x-z0;
+          // Parabolic phase shift for focusing
+          float r_squared = (y - focus_y) * (y - focus_y);
+           
+          // Beam width at distance z (along the x-axis)
+          float wz = w0 * sqrtf(1.0f + (z / z_R) * (z/ z_R));  // Beam width as a function of distance
+          float gaussian_envelope = (w0/wz)*expf(-((y - focus_y) * (y - focus_y)) / (wz * wz));
+          float Rz = z * (1.0f + (z_R * z_R) / (z * z));  // Radius of curvature of the wavefront
+          float phase_shift = (k_las * r_squared) / (2.0f * Rz);  // Parabolic phase shift for focusing
+
+          // Apply Gaussian envelope and phase shift to the laser boundary conditions
+          Qin[i * ny * nq + j * nq + by] = -1.0f * Bmax * gaussian_envelope * cos(k_las * x - f_las * t + phase_shift);
+          Qin[i * ny * nq + j * nq + ez] = 1.0f * Emax * gaussian_envelope * cos(k_las * x - f_las * t + phase_shift);
         }
     }
   }
@@ -534,8 +563,8 @@ __global__ void set_bc_kernel(float *Qin, float t, float dxi, float dyi, float k
   
 }
 
-void set_bc(dim3 bs, dim3 gs, float *Qin, float t, float dxi, float dyi, float k_las, float f_las, float Emax, float Bmax, int nx, int ny, int nq) {
-  set_bc_kernel<<<gs, bs>>>(Qin, t, dxi, dyi, k_las, f_las, Emax, Bmax, nx, ny, nq);
+void set_bc(dim3 bs, dim3 gs, float *Qin, float t, float dxi, float dyi, float k_las, float f_las, float Emax, float Bmax, int nx, int ny, int nq, float focus_distance, float w0) {
+  set_bc_kernel<<<gs, bs>>>(Qin, t, dxi, dyi, k_las, f_las, Emax, Bmax, nx, ny, nq, focus_distance, w0);
   cudaDeviceSynchronize();
 }
 
@@ -1751,7 +1780,7 @@ int main() {
 
     // Set initial conditions
     initial_condition(blockDim, gridDim, d_Q, rh_floor_host, Z_host, T_floor_host, aindex_host, bapp_host, b0_host, NX, NY, NQ);
-    fill_rod<<<gridDim, blockDim>>>(d_Q, NX, NY, NQ, te0_host, lxu, lyu, n0_host, Z_host, lamb_host, rh_floor_host, dgrate, dxi, dyi);
+    //fill_rod<<<gridDim, blockDim>>>(d_Q, NX, NY, NQ, te0_host, lxu, lyu, n0_host, Z_host, lamb_host, rh_floor_host, dgrate, dxi, dyi);
     cudaMemcpy(Q, d_Q, NX * NY * NQ * sizeof(float), cudaMemcpyDeviceToHost);
     write_vtk("output", Q, eta, flux_x, NX, NY, NQ, nout);  // Add timestep to the filename
 
@@ -1772,7 +1801,7 @@ int main() {
         get_flux(blockDim, gridDim, N_STREAMS, d_Q, d_flux_x, d_flux_y, 0.75, NX, NY, NQ);
         advance_time_level_rz(blockDim, gridDim, d_Q, d_flux_x, d_flux_y, d_sources, d_Q, dxt, dyt, dt, NX, NY, NQ);
         implicit_source2(blockDim, gridDim, d_Q, d_flux_x, d_flux_y, d_eta, d_Q, dxt, dyt, dt, NX, NY, NQ);
-        set_bc(blockDim, gridDim, d_Q, t + dt, dxi, dyi, k_las_host, f_las_host, Emax, Bmax, NX, NY, NQ);
+        set_bc(blockDim, gridDim, d_Q, t + dt, dxi, dyi, k_las_host, f_las_host, Emax, Bmax, NX, NY, NQ, focal_length, w0);
 
         cudaMemcpy(Q, d_Q, NX * NY * NQ * sizeof(float), cudaMemcpyDeviceToHost);
         cudaMemcpy(eta, d_eta, NX * NY * sizeof(float), cudaMemcpyDeviceToHost);
@@ -1789,7 +1818,7 @@ int main() {
         implicit_source2(blockDim, gridDim, d_Q1, d_flux_x, d_flux_y, d_eta, d_Q1, dxi, dyi, dt, NX, NY, NQ);
         limit_flow<<<gridDim, blockDim>>>(d_Q1, rh_floor_host, T_floor_host, aindex_host, Z_host, vhcf_host, NX, NY, NQ);       
         cudaDeviceSynchronize();
-        set_bc(blockDim, gridDim, d_Q1, t + dt, dxi, dyi, k_las_host, f_las_host, Emax, Bmax, NX, NY, NQ);
+        set_bc(blockDim, gridDim, d_Q1, t + dt, dxi, dyi, k_las_host, f_las_host, Emax, Bmax, NX, NY, NQ, focal_length, w0);
 
         get_sources_kernel<<<gridDim, blockDim>>>(d_Q1, d_sources, d_eta, d_Tiev, d_Teev, d_nuei, d_kap_i, d_kap_e, d_vis_i, NX, NY, NQ, dt, dxi);
         cudaDeviceSynchronize();
@@ -1804,7 +1833,7 @@ int main() {
         cudaDeviceSynchronize();
         limit_flow<<<gridDim, blockDim>>>(d_Q, rh_floor_host, T_floor_host, aindex_host, Z_host, vhcf_host, NX, NY, NQ);       
         cudaDeviceSynchronize();
-        set_bc(blockDim, gridDim, d_Q, t + dt, dxi, dyi, k_las_host, f_las_host, Emax, Bmax, NX, NY, NQ);
+        set_bc(blockDim, gridDim, d_Q, t + dt, dxi, dyi, k_las_host, f_las_host, Emax, Bmax, NX, NY, NQ, focal_length, w0);
 
         cudaMemcpy(Q, d_Q, NX * NY * NQ * sizeof(float), cudaMemcpyDeviceToHost);
         cudaMemcpy(eta, d_eta, NX * NY * sizeof(float), cudaMemcpyDeviceToHost);
@@ -1814,7 +1843,7 @@ int main() {
 
       niter++;
       t += dt;
-      if (niter % 1000 == 0) {
+      if (niter % 100 == 0) {
         printf("\nIteration time: %f seconds\n", (float)clock() / CLOCKS_PER_SEC);
         printf("nout=%d\n", nout);
         printf("t= %e ns, dt= %e ns, niter= %d\n", t * 100, dt*100, niter);
