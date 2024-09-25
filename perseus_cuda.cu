@@ -505,13 +505,20 @@ __global__ void set_bc_kernel(float *Qin, float t, float dxi, float dyi, float k
   if (j < ny) {
     for (int l = 0; l < nq; ++l) {
         // Right boundary
-        if (i == nx - 1 || i == nx - 2) {
+        if (i == nx - 1 || i == nx - 2 ) {
+        // if (i == nx - 1 || i == nx - 2 || i == nx - 3 || i == nx - 4) {
             Qin[(nx - 1) * ny * nq + j * nq + l] = Qin[(nx - 2) * ny * nq + j * nq + l] * xc(nx-2, dxi)/xc(nx-1,dxi);
-            Qin[(nx - 2) * ny * nq + j * nq + l] = Qin[(nx - 3) * ny * nq + j * nq + l] * xc(nx-3, dxi)/xc(nx-2, dxi);            
+            Qin[(nx - 2) * ny * nq + j * nq + l] = Qin[(nx - 3) * ny * nq + j * nq + l] * xc(nx-3, dxi)/xc(nx-2, dxi);   
+            // Qin[(nx - 3) * ny * nq + j * nq + l] = Qin[(nx - 4) * ny * nq + j * nq + l] * xc(nx-4, dxi)/xc(nx-3, dxi);            
+            // Qin[(nx - 4) * ny * nq + j * nq + l] = Qin[(nx - 5) * ny * nq + j * nq + l] * xc(nx-5, dxi)/xc(nx-4, dxi);            
+        
           }
 
         // Left boundary
-        if (i == 0 || i == 1) {
+        if (i == 0 || i == 1 ) {
+        // if (i == 0 || i == 1 || i == 2 || i == 3) {
+          // Qin[3 * ny * nq + j * nq + l] = Qin[4 * ny * nq + j * nq + l];
+          // Qin[2 * ny * nq + j * nq + l] = Qin[3 * ny * nq + j * nq + l];
           Qin[1 * ny * nq + j * nq + l] = Qin[2 * ny * nq + j * nq + l];
           Qin[0 * ny * nq + j * nq + l] = Qin[1 * ny * nq + j * nq + l];
 
@@ -546,17 +553,20 @@ __global__ void set_bc_kernel(float *Qin, float t, float dxi, float dyi, float k
     for (int l = 0; l < nq; ++l) {
         // Top boundary
         if (j == ny - 1 || j == ny - 2) {
+        // if (j == ny - 1 || j == ny - 2 || j == ny - 3 || j == ny - 4) {
           Qin[i * ny * nq + (ny - 1) * nq + l] = Qin[i * ny * nq + (ny - 2) * nq + l];
           Qin[i * ny * nq + (ny - 2) * nq + l] = Qin[i * ny * nq + (ny - 3) * nq + l];
+          // Qin[i * ny * nq + (ny - 3) * nq + l] = Qin[i * ny * nq + (ny - 4) * nq + l];
+          // Qin[i * ny * nq + (ny - 4) * nq + l] = Qin[i * ny * nq + (ny - 5) * nq + l];
         }
         // Bottom boundary
-        if (j == 0 || j == 1) {
+        if (j == 0 || j == 1 ) {
+        // if (j == 0 || j == 1 || j == 2 || j == 3) {
+          // Qin[i * ny * nq + 3 * nq + l] = Qin[i * ny * nq + 4 * nq + l];
+          // Qin[i * ny * nq + 2 * nq + l] = Qin[i * ny * nq + 3 * nq + l];
           Qin[i * ny * nq + 1 * nq + l] = Qin[i * ny * nq + 2 * nq + l];
           Qin[i * ny * nq + 0 * nq + l] = Qin[i * ny * nq + 1 * nq + l];
 
-          // // Laser boundary conditions
-          // Qin[i * ny * nq + j * nq + bz] = 0.1f*cos(k_las * yc(j, dyi) - f_las * t);
-          // Qin[i * ny * nq + j * nq + ex] = -cab*0.1f*cos(k_las * yc(j, dyi) - f_las * t);
         }
     }
   }
@@ -1841,9 +1851,17 @@ int main() {
         cudaMemcpy(flux_y, d_flux_y, NX * NY * NQ * sizeof(float), cudaMemcpyDeviceToHost);
       }
 
+      // if (iorder == 3)  {
+      //   dt = 0.5f * dt;
+      //   get_flux(blockDim, gridDim, N_STREAMS, d_Q, d_flux_x, d_flux_y, 1, NX, NY, NQ);
+      //   get_sources_kernel<<<gridDim, blockDim>>>(d_Q, d_sources, d_eta, d_Tiev, d_Teev, d_nuei, d_kap_i, d_kap_e, d_vis_i, NX, NY, NQ, dt, dxi);
+      //   cudaDeviceSynchronize();
+
+      // }
+
       niter++;
       t += dt;
-      if (niter % 100 == 0) {
+      if (niter % 200 == 0) {
         printf("\nIteration time: %f seconds\n", (float)clock() / CLOCKS_PER_SEC);
         printf("nout=%d\n", nout);
         printf("t= %e ns, dt= %e ns, niter= %d\n", t * 100, dt*100, niter);
